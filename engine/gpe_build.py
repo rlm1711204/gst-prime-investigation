@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 from gpe_core import REPORT_SPECS, period_key, fy_of, n0, inr
 from gpe_checks import due_date
 
-BUILD_VERSION = "1.7"
+BUILD_VERSION = "1.8"
 BOLD = Font(bold=True)
 THIN = Side(style='thin')
 BD = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -785,18 +785,27 @@ class Builder:
         res = self.R['hsn']; ws = self.sheet('12_HSN_PROFILE')
         if not res.get('available'): return self.unavailable(ws, res, 'HSN PROFILE')
         ws['A1'] = 'HSN PROFILE — WHAT THE TAXPAYER SAYS IT SUPPLIES, IN THE ORDER IT SAID IT'; ws['A1'].font = BOLD
-        self.head(ws, 3, ['Return Period','FY','HSN code','Taxable value','Total GST','Note'], [13,9,14,18,18,70])
+        self.head(ws, 3, ['Return Period','FY','HSN code','Taxable value','Total GST','Note','Rate charged %',
+                          'Notified rate % (12A)','Rate check result (12A)'], [13,9,14,18,18,40,11,13,60])
+        RC = _q('12A_HSN_RATE_CHECK')
         for i, (p, code, v, t) in enumerate(res['rows'], 4):
             ws.cell(row=i, column=1, value=p); ws.cell(row=i, column=2, value=fy_of(p))
             ws.cell(row=i, column=3, value=code); ws.cell(row=i, column=4, value=v); ws.cell(row=i, column=5, value=t)
             n = 'NEGATIVE — credit note. See 19B_CREDIT_NOTES.' if v < 0 else ''
             c = ws.cell(row=i, column=6, value=n); c.alignment = Alignment(wrap_text=True, vertical='top')
+            ws.cell(row=i, column=7, value=f'=IF(D{i}>0,E{i}/D{i}*100,"")').number_format = '0.00'
+            ws.cell(row=i, column=8, value=f'=IF({RC}!J{i+1}="","",{RC}!J{i+1})').number_format = '0.00'
+            x = ws.cell(row=i, column=9, value=f'=IF({RC}!M{i+1}="","",{RC}!M{i+1})')
+            x.alignment = Alignment(wrap_text=True, vertical='top')
         r = 3 + len(res['rows']) + 1
         ws.cell(row=r, column=1, value='TOTAL').font = BOLD
         for c in (4, 5):
             LL = get_column_letter(c); ws.cell(row=r, column=c, value=f'=SUM({LL}4:{LL}{r-1})').font = BOLD
-        self.box(ws, 4, r, 1, 6, numfrom=4)
-        for i in range(4, r+1): ws.cell(row=i, column=3).number_format = 'General'
+        ws.cell(row=r, column=7, value=f'=IF(D{r}>0,E{r}/D{r}*100,"")').number_format = '0.00'
+        self.box(ws, 4, r, 1, 9, numfrom=4)
+        for i in range(4, r+1):
+            ws.cell(row=i, column=3).number_format = 'General'
+            for c in (7, 8): ws.cell(row=i, column=c).number_format = '0.00'
         n = self.note(ws, r+2, 'HSN codes in the order they first appear: ' + ' -> '.join(res['codes']), bold=True)
         self.note(ws, n, 'A drift away from the registered nature of business, and in particular the appearance of goods '
                          'HSNs in a services taxpayer, points to disposal of capital goods. Section 18(6) with Rule 44(6): '
@@ -1568,6 +1577,17 @@ class Builder:
                    f'marked indicative on 12A.'),
                 a=0.0, s='12A_HSN_RATE_CHECK', p='As above, once the description and rate are established.',
                 r='MEDIUM — establish the goods'))
+        if h.get('unrecognised'):
+            u = h['unrecognised']; codes = sorted({j['hsn'] for j in u})
+            F.append(dict(
+                t=f'HSN reported that is not a heading of the tariff: {", ".join(codes)}',
+                w=(f'{len(u)} line(s), {u[0]["period"]} to {u[-1]["period"]}, taxable value Rs.{inr(sum(j["value"] for j in u))}, '
+                   f'tax Rs.{inr(sum(j["tax"] or 0 for j in u))}, at rates from {min(j["eff"] for j in u):.2f}% to '
+                   f'{max(j["eff"] for j in u):.2f}%. ' + (u[0]['look'] or {}).get('note', '').capitalize()
+                   + '. The rate due cannot be tested from these lines; the goods behind them have to be identified from the invoices.'),
+                a=0.0, s='12A_HSN_RATE_CHECK; 12_HSN_PROFILE',
+                p='Section 37 and Rule 59 (HSN in Table 12 of GSTR-1, Notification 78/2020-Central Tax); section 125.',
+                r='MEDIUM — identify the goods'))
         if h['off_slab']:
             F.append(dict(
                 t=f'{len(h["off_slab"])} HSN line(s) charged at a rate the law does not have',
@@ -1763,6 +1783,11 @@ class Builder:
                                   + (f' with entries for HSN {", ".join(hr["no_entry"][:20])}' if hr['master'] and hr['no_entry'] else '')
                                   + ', taken from the official rate notifications in force in the periods examined.',
                           'Without the notified rate the HSN lines cannot be tested for short levy.', 'Section 9; rate notifications'])
+            if hr.get('unrecognised'):
+                A.append(['HIGH', 'Call for the invoices and the item master behind HSN ' + ', '.join(sorted({j['hsn'] for j in hr['unrecognised']}))
+                                  + ' and classify the goods correctly.',
+                          'These codes are not tariff headings, so the rate due cannot be tested until the goods are identified.',
+                          'Section 70, section 37, Rule 59'])
             if hr['below']:
                 A.append(['HIGH', 'Call for the tax invoices behind the HSN lines charged below the notified rate (sheet 12A) and '
                                   'establish the description of the goods and the correct classification.',

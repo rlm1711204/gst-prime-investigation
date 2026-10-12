@@ -16,11 +16,11 @@ import os, re, datetime, hashlib, calendar
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
-RATES_VERSION = "1.1"
+RATES_VERSION = "1.2"
 
 COLUMNS = ['Row ID', 'HSN', 'Level', 'Description of goods (verbatim)', 'IGST rate %', 'CGST rate %',
            'SGST/UTGST rate %', 'Compensation cess', 'Valid from', 'Valid to', 'Notification', 'Schedule',
-           'S.No.', 'Excluding HSN', 'Source file', 'Source page', 'Source MD5', 'Status', 'Remarks']
+           'S.No.', 'Excluding HSN', 'Scope', 'Source file', 'Source page', 'Source MD5', 'Status', 'Remarks']
 REQUIRED = ['HSN', 'Description of goods (verbatim)', 'IGST rate %', 'Valid from', 'Notification']
 STATUSES = ('OFFICIAL FILE', 'COMPILATION', 'TO VERIFY')
 SLABS = (0, 0.1, 0.25, 1, 1.5, 3, 5, 6, 7.5, 12, 18, 28, 40)   # IGST-equivalent rates that exist in the law
@@ -110,8 +110,11 @@ def validate(rows):
         if e:
             errs.append(f'row {i}: ' + '; '.join(e)); continue
         ex = [norm_hsn(x) for x in re.split(r'[,;]', str(r.get('Excluding HSN') or '')) if x.strip()]
+        sc = str(r.get('Scope') or '').strip().upper()
+        sc = 'PART OF CODE' if sc.startswith('PART') else ('WHOLE CODE' if sc.startswith('WHOLE') else None)
+        if h == 'ANY': sc = 'PART OF CODE'
         out.append({**{c: r.get(c) for c in COLUMNS}, 'Row ID': rid, 'HSN': h, 'Level': level_of(h),
-                    'Excluding HSN': ', '.join(x for x in ex if x) or None,
+                    'Excluding HSN': ', '.join(x for x in ex if x) or None, 'Scope': sc,
                     'IGST rate %': ig, 'CGST rate %': cg, 'SGST/UTGST rate %': sg,
                     'Valid from': vf, 'Valid to': vt, 'Status': st})
     return out, errs
@@ -164,6 +167,9 @@ README = [
     '        read the Gazette / CBIC copy through the notebook: it replaces the entries of the same notification.',
     '"Excluding HSN" lists codes the notification carves out of an entry ([other than ...], (Except ...)).',
     'HSN "ANY" = an entry for goods of any Chapter, decided by description alone; it is shown, never matched by code.',
+    'Scope "PART OF CODE" = the entry covers only some goods of its code (a Chapter-level entry with a specific description,',
+    '        or a heading entry such as 2309 "Fish soluble paste"). Where only such entries match, the residual entry is',
+    '        offered as the rate for the other goods; a shorter-code PART entry at a lower rate is shown as a concession.',
     '',
     'How the check reads it: for each HSN line of a month, every row in force on any day of that month whose HSN is a',
     'prefix of the reported HSN is a candidate; the longest prefix wins. If the reported HSN is shorter than entries in the',
@@ -184,14 +190,14 @@ def save_master(rows, path, sources=None, changelog=None):
         c.font = B; c.border = BD; c.alignment = Alignment(wrap_text=True, vertical='top')
     for r in sorted(rows, key=lambda r: (r['HSN'] == '*', r['HSN'], r['Valid from'] or datetime.date.min, r['Row ID'])):
         ws.append([r.get(c) for c in COLUMNS])
-    for i, w in enumerate([8, 11, 11, 60, 9, 9, 9, 14, 12, 12, 30, 10, 7, 16, 34, 8, 34, 14, 40], 1):
+    for i, w in enumerate([8, 11, 11, 60, 9, 9, 9, 14, 12, 12, 30, 10, 7, 16, 14, 34, 8, 34, 14, 40], 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
     for row in ws.iter_rows(min_row=2):
         for c in row:
             c.border = BD; c.alignment = Alignment(wrap_text=True, vertical='top')
         row[1].number_format = '@'
         for k in (8, 9): row[k].number_format = 'DD-MM-YYYY'
-        if row[17].value != 'OFFICIAL FILE': row[17].fill = PatternFill('solid', fgColor='FFD9D9')
+        if row[18].value != 'OFFICIAL FILE': row[18].fill = PatternFill('solid', fgColor='FFD9D9')
     ws.freeze_panes = 'A2'
     s = wb.create_sheet('SOURCES')
     s.append(['File', 'MD5', 'Notification', 'Dated', 'Effective from', 'Where downloaded', 'Loaded on', 'Rows'])
@@ -231,13 +237,28 @@ def lookup(rows, hsn, period):
     elif finer:
         chosen, basis = [], 'finer entries only'
     else:
+        # a heading number beyond the last heading the rate notifications list for that Chapter is most likely not a
+        # heading of the Customs Tariff at all (9090, 9099: Chapter 90 ends at 9033) — reported, not matched to the residual
+        heads = [r['HSN'][:4] for r in rows if r['HSN'] not in ('*', 'ANY') and len(r['HSN']) >= 4 and r['HSN'][:2] == h[:2]]
+        if len(h) >= 4 and h[:2] != '99' and heads and h[:4] > max(heads):
+            return dict(status='HSN CODE NOT RECOGNISED', rows=[], rates=[], finer=[], basis='none', any_chapter=anych,
+                        concessions=[], covered_from=None, all_official=False,
+                        note=f'heading {h[:4]} is beyond the last heading listed for Chapter {h[:2]} ({max(heads)})')
         chosen = [r for r in live if r['HSN'] == '*']
         basis = 'residual entry' if chosen else 'none'
+    narrow = bool(chosen) and basis == 'longest prefix' and all(r.get('Scope') == 'PART OF CODE' for r in chosen)
+    if narrow:
+        # the only entries for this code cover some goods of it; the rest fall to the residual entry
+        chosen = chosen + [r for r in live if r['HSN'] == '*']
+        basis = 'narrow entry, residual entry for other goods'
     cand = chosen + [r for r in finer if r not in chosen]
+    main = min((r['IGST rate %'] for r in chosen), default=None)
+    conc = [r for r in pre if r not in chosen and r.get('Scope') == 'PART OF CODE'
+            and main is not None and r['IGST rate %'] < main]
     rates = sorted({r['IGST rate %'] for r in cand})
-    windows = sorted({(r['Valid from'], r['Valid to']) for r in cand}, key=lambda w: w[0])
-    split = len(windows) > 1 and len({tuple(sorted({x['IGST rate %'] for x in cand if (x['Valid from'], x['Valid to']) == w}))
-                                      for w in windows}) > 1
+    # a rate change inside the month: some candidate entry starts or ends part-way through it, and the rates differ
+    split = len(rates) > 1 and any((first < r['Valid from'] <= last) or (r['Valid to'] and first <= r['Valid to'] < last)
+                                   for r in cand)
     covered = min((r['Valid from'] for r in cand), default=None)
     if not cand:
         status = 'NO ENTRY IN MASTER'
@@ -251,7 +272,7 @@ def lookup(rows, hsn, period):
         status = 'RESIDUAL ENTRY'
     else:
         status = 'SINGLE RATE'
-    return dict(status=status, rows=cand, rates=rates, finer=finer, basis=basis, any_chapter=anych,
+    return dict(status=status, rows=cand, rates=rates, finer=finer, basis=basis, any_chapter=anych, concessions=conc,
                 covered_from=covered,
                 all_official=bool(cand) and all(r['Status'] == 'OFFICIAL FILE' for r in cand))
 
@@ -272,7 +293,7 @@ def judge(rows, hsn, period, value, tax):
     out['look'] = lk
     rates = lk['rates']
     if not rates:
-        out['result'] = lk['status']
+        out['result'] = lk['status'] + (f' — {lk["note"]}; the true rate cannot be found from this code' if lk.get('note') else '')
         return out
     lo = min(rates)
     out['notified'] = rates[0] if len(rates) == 1 else rates
@@ -285,6 +306,14 @@ def judge(rows, hsn, period, value, tax):
                          'BELOW EVERY POSSIBLE RATE — shortfall shown against the lowest')
         # a residual match is never counted: exempt goods sit in a separate exemption notification
         out['countable'] = lk['status'] == 'SINGLE RATE' and lk['all_official']
+        conc = lk.get('concessions') or []
+        if conc and eff >= min(r['IGST rate %'] for r in conc) - TOL:
+            cr = sorted({r['IGST rate %'] for r in conc})
+            out['result'] += (f' — but at or above the concessional rate of {"/".join(f"{x:g}" for x in cr)}% '
+                              f'for specified goods (' + '; '.join(f'{r["Notification"].split(" dated")[0]} Sch {r.get("Schedule") or "-"} '
+                                                                   f'S.No. {r.get("S.No.") or "-"}' for r in conc[:3])
+                              + '): a mix, or goods that qualify — check the invoices')
+            out['countable'] = False
     elif eff > max(rates) + TOL:
         out['result'] = 'ABOVE THE NOTIFIED RATE (tax over-charged; no revenue loss)'
     else:
@@ -478,6 +507,8 @@ def rows_from_notification(meta, parsed, status, valid_from=None, valid_to=None,
                      'Notification': f'{meta.get("notification")} dated {meta.get("dated")}',
                      'Schedule': e['schedule'], 'S.No.': e['sno'], 'Source file': meta['file'], 'Source page': e['page'],
                      'Source MD5': meta['md5'], 'Status': status, 'Excluding HSN': ', '.join(e['excluded']) or None,
+                     'Scope': ('PART OF CODE' if (e['hsn'] == 'ANY' or (len(e['hsn']) == 2 and
+                               not e['desc'].lower().startswith('all'))) else None),
                      'Remarks': (note + (f'Code column reads "{e["hsn_text"]}".' if e['hsn_text'] and
                                          re.sub(r'\D', '', e['hsn_text']) != e['hsn'] else '')).strip() or None})
     return rows

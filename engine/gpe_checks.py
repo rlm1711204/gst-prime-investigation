@@ -694,6 +694,7 @@ def chk_hsn_rate(ing, hsn_res, rate_master=None):
                 countable=sum(j['short'] for j in tested if j['countable']),
                 indicative=sum(j['short'] for j in tested if j['short'] > 0 and not j['countable']),
                 no_entry=sorted({j['hsn'] for j in tested if j['result'] == 'NO ENTRY IN MASTER'}),
+                unrecognised=[j for j in tested if (j['look'] or {}).get('status') == 'HSN CODE NOT RECOGNISED'],
                 ambiguous=[j for j in tested if (j['look'] or {}).get('status') in
                            ('DEPENDS ON DESCRIPTION', 'RATE CHANGED DURING THE MONTH')])
 
