@@ -899,6 +899,11 @@ class Builder:
         elif res['no_entry']:
             n = self.note(ws, n, 'NO ENTRY IN THE MASTER for HSN ' + ', '.join(res['no_entry']) + ' in the months tested. Add the '
                                  'entries from the official notification and run again.', bold=True)
+        _anyc = max((len((j['look'] or {}).get('any_chapter') or []) for j in res['lines']), default=0)
+        if _anyc:
+            n = self.note(ws, n, f'{_anyc} entr{"y" if _anyc == 1 else "ies"} of the master apply to goods of "any Chapter" by '
+                                 f'description alone (for example goods for specified uses). They can displace the rate above '
+                                 f'whatever the HSN, so check the description of the goods against them before relying on a line.')
         if res['off_slab']:
             n = self.note(ws, n, f'{len(res["off_slab"])} line(s) charged at a rate the law does not have — usually several '
                                  f'rates under one HSN, or tax entered wrongly: ' + '; '.join(
