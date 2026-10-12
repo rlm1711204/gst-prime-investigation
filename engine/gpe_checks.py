@@ -8,7 +8,7 @@ import datetime, re
 from gpe_core import (REPORT_SPECS, parse_period, period_key, fy_of, fy_long,
                       n0, to_date, inr)
 
-CHECKS_VERSION = "1.2"
+CHECKS_VERSION = "1.3"
 FY_ORDER = ['2021-22','2022-23','2023-24','2024-25','2025-26','2026-27',
             '2027-28','2028-29','2029-30']
 
@@ -664,7 +664,40 @@ def chk_tds_detail(ing, case_gstin=None):
                 top_share=(max((p['value'] for p in lst), default=0) / total_v if total_v else None),
                 off_rate=off_rate, near_threshold=near)
 
-def run_all(ing):
+# ------------------------------------- 16. HSN rate check (NEW v1.9)
+def chk_hsn_rate(ing, hsn_res, rate_master=None):
+    """Rate actually charged on each HSN line (Total GST / taxable value) against the rate notified for that
+    HSN in that month, read from the rate master. Without a master, the line-level tests that need no
+    notified rate still run: a rate that is not a rate the law knows, and one HSN charged at different
+    rates in different months."""
+    if not hsn_res.get('available'):
+        return dict(available=False, missing=['HSN'])
+    import gpe_rates
+    rows = (rate_master or {}).get('rows') or []
+    lines = []
+    for i, (p, code, v, t) in enumerate(hsn_res['rows']):
+        j = gpe_rates.judge(rows, code, p, v, t)
+        j['idx'] = i
+        lines.append(j)
+    by_hsn = {}
+    for j in lines:
+        if j['eff'] is not None and j['tax']:
+            by_hsn.setdefault(j['hsn'], set()).add(j['slab'])
+    varying = {h: sorted(s) for h, s in by_hsn.items() if len(s) > 1}
+    tested = [j for j in lines if j['eff'] is not None]
+    return dict(available=True, lines=lines, master=bool(rows),
+                master_version=(rate_master or {}).get('version'), master_md5=(rate_master or {}).get('md5'),
+                master_path=(rate_master or {}).get('path'),
+                off_slab=[j for j in tested if j['off_slab']],
+                varying=varying,
+                below=[j for j in tested if j['short'] > 0],
+                countable=sum(j['short'] for j in tested if j['countable']),
+                indicative=sum(j['short'] for j in tested if j['short'] > 0 and not j['countable']),
+                no_entry=sorted({j['hsn'] for j in tested if j['result'] == 'NO ENTRY IN MASTER'}),
+                ambiguous=[j for j in tested if (j['look'] or {}).get('status') in
+                           ('DEPENDS ON DESCRIPTION', 'RATE CHANGED DURING THE MONTH')])
+
+def run_all(ing, rate_master=None):
     m = build_master(ing)
     r1 = chk_r1_vs_r3b(ing, m)
     res = dict(
@@ -685,4 +718,5 @@ def run_all(ing):
         limitation=limitation(_fys(ing.all_periods())),
         unfiled=unfiled_periods(ing),
     )
+    res['hsn_rate'] = chk_hsn_rate(ing, res['hsn'], rate_master)
     return res

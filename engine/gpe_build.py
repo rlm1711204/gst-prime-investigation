@@ -4,7 +4,7 @@ GST-PRIME PRELIMINARY INVESTIGATION ENGINE  —  workbook builder
 Source sheets are written verbatim first. Every computed sheet then reads them
 with live Excel formulas, so any value can be traced back to a source cell.
 """
-import datetime
+import datetime, os
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.comments import Comment
@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 from gpe_core import REPORT_SPECS, period_key, fy_of, n0, inr
 from gpe_checks import due_date
 
-BUILD_VERSION = "1.6"
+BUILD_VERSION = "1.7"
 BOLD = Font(bold=True)
 THIN = Side(style='thin')
 BD = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -802,6 +802,117 @@ class Builder:
                          'HSNs in a services taxpayer, points to disposal of capital goods. Section 18(6) with Rule 44(6): '
                          'tax is the higher of the credit taken less the prescribed reduction, or the tax on transaction value.')
 
+
+    # ---------------------------------------------- 12A HSN rate check (v1.9)
+    def build_hsn_rate(self):
+        res = self.R.get('hsn_rate') or {}
+        ws = self.sheet('12A_HSN_RATE_CHECK')
+        if not res.get('available'):
+            return self.unavailable(ws, res, 'RATE CHARGED AGAINST THE NOTIFIED RATE, HSN BY HSN')
+        import gpe_rates
+        # ---- the rate-master rows actually used, verbatim, so every notified rate can be traced
+        used = {}
+        for j in res['lines']:
+            for r in (j['look'] or {}).get('rows', []):
+                used[r['Row ID']] = r
+        sm = self.sheet('SRC_RATE_MASTER')
+        sm['A1'] = ('GST RATE MASTER — the entries used on 12A_HSN_RATE_CHECK, reproduced verbatim. '
+                    + (f'Master version {res["master_version"]}, file {os.path.basename(res["master_path"] or "")}, '
+                       f'MD5 {res["master_md5"]}.' if res['master'] else 'NO RATE MASTER WAS LOADED.'))
+        sm['A1'].font = BOLD
+        cols = gpe_rates.COLUMNS
+        self.head(sm, 3, cols, [8, 11, 11, 60, 9, 9, 9, 14, 12, 12, 30, 10, 7, 34, 8, 34, 14, 40])
+        for i, r in enumerate(sorted(used.values(), key=lambda r: (r['HSN'], r['Valid from'] or datetime.date.min)), 4):
+            for k, c in enumerate(cols, 1):
+                x = sm.cell(row=i, column=k, value=r.get(c))
+                x.alignment = Alignment(wrap_text=True, vertical='top')
+                if c in ('Valid from', 'Valid to'): x.number_format = 'DD-MM-YYYY'
+            if r['Status'] != 'OFFICIAL FILE' and self.mark: sm.cell(row=i, column=17).fill = MISSING_FILL
+        sl = 3 + len(used)
+        if used: self.box(sm, 4, sl, 1, len(cols))
+        SM = _q('SRC_RATE_MASTER')
+        # ---- the check
+        ws['A1'] = 'RATE CHARGED AGAINST THE RATE NOTIFIED FOR THAT HSN IN THAT MONTH'; ws['A1'].font = BOLD
+        ws['A2'] = ('Rate charged = Total GST / taxable value, from the HSN summary (GSTR-1 Table 12). Notified rate = the IGST-'
+                    'equivalent rate (CGST + SGST) of the rate-master entry in force in that month, matched on the longest HSN '
+                    'prefix. A shortfall is COUNTED only where one rate applies and the entry is taken from an official file; '
+                    'otherwise it is shown as indicative. Classification turns on the description of the goods, not on the code '
+                    'the taxpayer chose — confirm from the invoices before any figure is used.')
+        ws['A2'].alignment = Alignment(wrap_text=True, vertical='top'); ws.merge_cells('A2:O2'); ws.row_dimensions[2].height = 62
+        H = ['Return Period','FY','HSN','Taxable value','Total GST','Rate charged %','Nearest rate the law has %',
+             'Charged at a rate the law does not have?','Rate master says','Notified rate %','Master Row ID(s)',
+             'Notification / Schedule / S.No.','Result','Tax short at the notified rate','Counted in the total?']
+        self.head(ws, 4, H, [11, 9, 11, 15, 13, 9, 10, 11, 22, 11, 10, 34, 40, 15, 11])
+        HP = _q('12_HSN_PROFILE')
+        first = 5
+        for i, j in enumerate(res['lines'], first):
+            src = 4 + j['idx']
+            ws.cell(row=i, column=1, value=j['period']); ws.cell(row=i, column=2, value=fy_of(j['period']))
+            ws.cell(row=i, column=3, value=j['hsn'])
+            ws.cell(row=i, column=4, value=f'={HP}!D{src}'); ws.cell(row=i, column=5, value=f'={HP}!E{src}')
+            ws.cell(row=i, column=6, value=f'=IF(D{i}>0,E{i}/D{i}*100,"")')
+            if j['eff'] is None:
+                ws.cell(row=i, column=13, value=j['result'])
+                continue
+            ws.cell(row=i, column=7, value=j['slab'])
+            ws.cell(row=i, column=8, value=f'=IF(ABS(F{i}-G{i})>{gpe_rates.TOL},"YES","")')
+            lk = j['look'] or {}
+            c = ws.cell(row=i, column=9, value=lk.get('status', 'NO ENTRY IN MASTER'))
+            if lk.get('status') != 'SINGLE RATE' and self.mark: c.fill = MISSING_FILL
+            rr = lk.get('rows', [])
+            ids = [r['Row ID'] for r in rr]
+            ws.cell(row=i, column=11, value=', '.join(str(x) for x in ids))
+            ws.cell(row=i, column=12, value='; '.join(f'{r["Notification"]} / {r.get("Schedule") or "-"} / '
+                                                      f'{r.get("S.No.") or "-"}' for r in rr))
+            if len(j['look']['rates'] if lk else []) == 1 and ids:
+                ws.cell(row=i, column=10, value=f'=INDEX({SM}!$E$4:$E${sl},MATCH({ids[0]},{SM}!$A$4:$A${sl},0))')
+                ws.cell(row=i, column=14, value=f'=IF(AND(ISNUMBER(J{i}),ISNUMBER(F{i})),IF(F{i}<J{i}-{gpe_rates.TOL},'
+                                                f'D{i}*(J{i}-F{i})/100,0),0)')
+            elif lk and lk.get('rates'):
+                ws.cell(row=i, column=10, value=' / '.join(f'{x:g}' for x in lk['rates']))
+                ws.cell(row=i, column=14, value=round(j['short'], 2))
+            else:
+                self.na(ws, i, 10, 'NO ENTRY')
+                ws.cell(row=i, column=14, value=0)
+            ws.cell(row=i, column=13, value=j['result'])
+            ws.cell(row=i, column=15, value='YES' if j['countable'] else ('indicative' if j['short'] > 0 else ''))
+            if j['short'] > 0 and self.mark: ws.cell(row=i, column=13).fill = MISSING_FILL
+        last = first + len(res['lines']) - 1
+        t = last + 1
+        ws.cell(row=t, column=1, value='TOTAL').font = BOLD
+        for col in (4, 5, 14):
+            L = get_column_letter(col); ws.cell(row=t, column=col, value=f'=SUM({L}{first}:{L}{last})').font = BOLD
+        ws.cell(row=t + 1, column=13, value='Of which COUNTED (single rate, official entry)').font = BOLD
+        ws.cell(row=t + 1, column=14, value=f'=SUMIF(O{first}:O{last},"YES",N{first}:N{last})').font = BOLD
+        self.box(ws, first, t + 1, 1, 15, numfrom=4)
+        for r in range(first, t + 2):
+            for col in (1, 2, 3, 8, 9, 11, 12, 13, 15):
+                ws.cell(row=r, column=col).number_format = 'General'
+                ws.cell(row=r, column=col).alignment = Alignment(wrap_text=True, vertical='top')
+            for col in (6, 7): ws.cell(row=r, column=col).number_format = '0.00'
+        self.hsn_rate_counted_cell = f"'12A_HSN_RATE_CHECK'!N{t+1}"
+        n = t + 3
+        if not res['master']:
+            n = self.note(ws, n, 'NO RATE MASTER LOADED — the notified-rate columns are empty. Load the master in the notebook '
+                                 '(Rate master cell) and run again. The two tests below need no master.', bold=True)
+            if self.mark: ws.cell(row=n - 1, column=1).fill = MISSING_FILL
+        elif res['no_entry']:
+            n = self.note(ws, n, 'NO ENTRY IN THE MASTER for HSN ' + ', '.join(res['no_entry']) + ' in the months tested. Add the '
+                                 'entries from the official notification and run again.', bold=True)
+        if res['off_slab']:
+            n = self.note(ws, n, f'{len(res["off_slab"])} line(s) charged at a rate the law does not have — usually several '
+                                 f'rates under one HSN, or tax entered wrongly: ' + '; '.join(
+                f'{j["period"]} {j["hsn"]} {j["eff"]:.2f}%' for j in res['off_slab'][:15]) + '.')
+        if res['varying']:
+            n = self.note(ws, n, 'The same HSN charged at different rates in different months: ' + '; '.join(
+                f'{h} at {", ".join(f"{x:g}%" for x in v)}' for h, v in res['varying'].items()) + '.')
+        self.note(ws, n + 1, 'LAW. Tax is levied at the rate notified under section 9(1) (CGST) / 5(1) (IGST) on the value under '
+                             'section 15. The rate notifications classify by Chapter, heading, sub-heading and tariff item of the '
+                             'Customs Tariff, read with its rules of interpretation; the HSN in GSTR-1 Table 12 is the taxpayer\'s '
+                             'own declaration. A short levy is recoverable under section 73 / 74 (FY 2023-24 and earlier) or 74A '
+                             '(FY 2024-25 onwards), with interest under section 50.')
+        ws.freeze_panes = 'D5'
+
     def build_limitation(self):
         ws = self.sheet('24_LIMITATION')
         ws['A1'] = 'LIMITATION — INDICATIVE OUTER DATES BY FINANCIAL YEAR'; ws['A1'].font = BOLD
@@ -1265,6 +1376,7 @@ class Builder:
                 r='MEDIUM'))
         F += self._tds_findings()
         F += self._tds_detail_findings()
+        F += self._hsn_rate_findings()
         rev = [c for c in self.ing.changes if c['level'] == 'REVIEW']
         if rev:
             reps = sorted({c['title'] for c in rev})
@@ -1423,6 +1535,45 @@ class Builder:
                           w='; '.join(f'{m["period"]}: detail Rs.{inr(m["tds"])} / {m["parties"]} parties, summary '
                                       f'Rs.{inr(n0(m["s_tds"]))} / {int(n0(m["s_parties"]))}' for m in bad_m) + '.',
                           a=0.0, s='19D_TDS_PARTIES', p='—', r='CHECK THE EXPORTS'))
+        return F
+
+    def _hsn_rate_findings(self):
+        h = self.R.get('hsn_rate') or {}
+        if not h.get('available'): return []
+        F = []
+        if h['countable'] > 1:
+            b = [j for j in h['below'] if j['countable']]
+            F.append(dict(
+                t='Tax charged below the rate notified for the HSN declared',
+                w=(f'{len(b)} HSN line(s) carry tax below the rate notified for that HSN in that month, where a single rate '
+                   f'applies and the rate-master entry is from an official notification: ' + '; '.join(
+                       f'{j["period"]} HSN {j["hsn"]} charged {j["eff"]:.2f}% against {j["notified"]:g}% on '
+                       f'Rs.{inr(j["value"])} — short Rs.{inr(j["short"])}' for j in b[:10])
+                   + (f'; and {len(b)-10} more' if len(b) > 10 else '') + '. Classification is to be confirmed from the '
+                     'invoices: the rate follows the description of the goods.'),
+                a=h['countable'], s='12A_HSN_RATE_CHECK; SRC_RATE_MASTER',
+                p='Section 9(1) CGST Act / section 5(1) IGST Act with the rate notification cited on 12A; section 15; '
+                  'section 73 / 74 / 74A; section 50.',
+                r='HIGH — classification to be confirmed'))
+        if h['indicative'] > 1:
+            F.append(dict(
+                t='Possible short levy where the rate depends on the description or the entry is unverified',
+                w=(f'Rs.{inr(h["indicative"])} in all, NOT counted in the total: the HSN reported carries more than one '
+                   f'possible rate, the rate changed during the month, or the master entry is still TO VERIFY. See the lines '
+                   f'marked indicative on 12A.'),
+                a=0.0, s='12A_HSN_RATE_CHECK', p='As above, once the description and rate are established.',
+                r='MEDIUM — establish the goods'))
+        if h['off_slab']:
+            F.append(dict(
+                t=f'{len(h["off_slab"])} HSN line(s) charged at a rate the law does not have',
+                w=('; '.join(f'{j["period"]} HSN {j["hsn"]} {j["eff"]:.2f}%' for j in h['off_slab'][:12])
+                   + '. Either several rates sit under one HSN line or the tax was entered wrongly. Draw the invoices.'),
+                a=0.0, s='12A_HSN_RATE_CHECK', p='Section 37 and Rule 59 (Table 12); section 9.', r='MEDIUM'))
+        if h['varying']:
+            F.append(dict(
+                t='Same HSN charged at different rates in different months',
+                w='; '.join(f'HSN {k}: {", ".join(f"{x:g}%" for x in v)}' for k, v in h['varying'].items()) + '.',
+                a=0.0, s='12A_HSN_RATE_CHECK', p='Section 9; rate notification.', r='MEDIUM'))
         return F
 
     def build_findings(self):
@@ -1600,6 +1751,18 @@ class Builder:
                       'Credit taken against no outward supply must be shown to relate to inputs used or intended to be used '
                       'in business.', 'Section 16(1), section 17(5), section 70'])
         A += self._tds_actions()
+        hr = R.get('hsn_rate') or {}
+        if hr.get('available'):
+            if not hr['master'] or hr['no_entry']:
+                A.append(['HIGH', 'Load the GST rate master (notebook: Rate master cell)'
+                                  + (f' with entries for HSN {", ".join(hr["no_entry"][:20])}' if hr['master'] and hr['no_entry'] else '')
+                                  + ', taken from the official rate notifications in force in the periods examined.',
+                          'Without the notified rate the HSN lines cannot be tested for short levy.', 'Section 9; rate notifications'])
+            if hr['below']:
+                A.append(['HIGH', 'Call for the tax invoices behind the HSN lines charged below the notified rate (sheet 12A) and '
+                                  'establish the description of the goods and the correct classification.',
+                          'The rate follows the description; the HSN code is the taxpayer\'s own choice.',
+                          'Section 70, section 9, Customs Tariff rules of interpretation'])
         A += [['HIGH', 'Draw the electronic credit and cash ledgers from registration to date, and GSTR-2B for every period.',
                'GSTR-2B and not 2A governs entitlement after 1 January 2022, and only the ledgers settle the CGST '
                'assumptions and confirm the true cash position.', 'Section 151, Rule 36(4), Rule 60'],
@@ -1726,6 +1889,15 @@ class Builder:
                                             f'{len({x["_file"] for x in self.ing.data[code]})} file(s)')
                     if have else 'The tests that need it were not run.')
             r += 1
+        hr = self.R.get('hsn_rate') or {}
+        ws.cell(row=r, column=1, value='HELD' if hr.get('master') else 'NOT LOADED')
+        if not hr.get('master') and self.mark: ws.cell(row=r, column=1).fill = MISSING_FILL
+        ws.cell(row=r, column=2, value='GST rate master (official rate notifications)')
+        ws.cell(row=r, column=3, value='The notified rate for each HSN in each month — sheet 12A.')
+        ws.cell(row=r, column=4, value=(f'Version {hr.get("master_version")}' + (f'; no entry for HSN {", ".join(hr["no_entry"][:15])}'
+                                         if hr.get('no_entry') else '')) if hr.get('master') else
+                'Load it in the notebook (Rate master cell).')
+        r += 1
         for x in EXTERNAL:
             ws.cell(row=r, column=1, value='NOT IN GST-PRIME')
             if self.mark: ws.cell(row=r, column=1).fill = MISSING_FILL
@@ -1916,6 +2088,15 @@ DERIV = [
   '"No Of Deductors"','SRC_R7_DETAIL; SRC_R7_TDS','The detail heads are rounded per line, so a few rupees of rounding is expected.'],
  ['SRC_R7_DETAIL','Return Period','Taken from the FILE NAME (..._Month_Mar-2026.xlsx)','File name',
   'The export carries no period inside it. The register says so against every such file.'],
+ ['12A_HSN_RATE_CHECK','Rate charged %','[Total GST] / [Taxable value] x 100, read from 12_HSN_PROFILE','12_HSN_PROFILE',
+  'The rate the taxpayer actually applied on the line, whatever HSN it declared.'],
+ ['12A_HSN_RATE_CHECK','Notified rate %','INDEX/MATCH on Master Row ID into SRC_RATE_MASTER','SRC_RATE_MASTER',
+  'Entry in force in that month, longest HSN prefix. Several entries with different rates (finer tariff items, or a rate '
+  'change in the month) are listed, and the line is then indicative, not counted.'],
+ ['12A_HSN_RATE_CHECK','Tax short at the notified rate','IF(rate charged < notified - 0.10, taxable value x (notified - charged) / 100, 0)',
+  'This sheet','The 0.10 point tolerance absorbs rounding. Counted only for a single rate from an official entry.'],
+ ['12A_HSN_RATE_CHECK','Nearest rate the law has','Nearest of 0, 0.1, 0.25, 1, 1.5, 3, 5, 6, 7.5, 12, 18, 28, 40 per cent',
+  'Constant','A line charged at a rate the law does not have is several rates under one line, or an error.'],
  ['24_LIMITATION','All dates','Annual return due 31 December following the FY; section 73 order +3 years, notice 3 months '
   'earlier; section 74 order +5 years, notice 6 months earlier','Computed from the statute',
   'Indicative only. Extension notifications are not applied and several have been litigated.'],
@@ -1996,6 +2177,8 @@ SHEET_NOTE = {
  '10_MONTHLY_MASTER':'One row per tax period; every cell a live lookup.',
  '11_FY_SUMMARY':'Financial-year roll-up.',
  '12_HSN_PROFILE':'What the taxpayer says it supplies, in order.',
+ '12A_HSN_RATE_CHECK':'Rate charged on each HSN line against the rate notified for it in that month.',
+ 'SRC_RATE_MASTER':'The rate-master entries used, verbatim, with notification, schedule, S.No. and source file.',
  '13_EXCESS_ITC':'ITC against GSTR-2A, head by head. THE DEMAND FIGURE.',
  '14_DORMANCY_ITC':'Credit availed in NIL-turnover periods.',
  '15_RULE_86B':'Cash component of the output tax discharge.',
@@ -2014,8 +2197,8 @@ SHEET_NOTE = {
  '24_LIMITATION':'Indicative outer dates by financial year.',
 }
 
-ORDER_HINT = ['00_INDEX'] + [f'SRC_{c}'[:31] for c in REPORT_SPECS] + \
-             ['08_DERIVATION_LOGIC','09_FILE_REGISTER','09A_RESTATEMENTS','10_MONTHLY_MASTER','11_FY_SUMMARY','12_HSN_PROFILE',
+ORDER_HINT = ['00_INDEX'] + [f'SRC_{c}'[:31] for c in REPORT_SPECS] + ['SRC_RATE_MASTER'] + \
+             ['08_DERIVATION_LOGIC','09_FILE_REGISTER','09A_RESTATEMENTS','10_MONTHLY_MASTER','11_FY_SUMMARY','12_HSN_PROFILE','12A_HSN_RATE_CHECK',
               '13_EXCESS_ITC','14_DORMANCY_ITC','15_RULE_86B','16_RCM_CHECK','17_R1_vs_R3B','18_RETURN_FILING',
               '19_CASH_RECON','19A_ITC_vs_2A','19B_CREDIT_NOTES','19C_TDS_GSTR7','19D_TDS_PARTIES','20_FINDINGS','21_REPORT','22_ACTION_POINTS',
               '23_DATA_GAPS','24_LIMITATION']
@@ -2024,7 +2207,7 @@ def build_workbook(ing, R, gstin, name, out_path, mark_missing_light_red=True, p
     b = Builder(ing, R, gstin, name, mark_missing_light_red, profile)
     b.build_sources()
     b.build_master(); b.build_fy()
-    b.build_hsn(); b.build_excess(); b.build_dormancy(); b.build_86b(); b.build_rcm()
+    b.build_hsn(); b.build_hsn_rate(); b.build_excess(); b.build_dormancy(); b.build_86b(); b.build_rcm()
     b.build_r1(); b.build_filing(); b.build_cash(); b.build_itc_2a(); b.build_credit_notes(); b.build_tds(); b.build_tds_parties()
     F = b.build_findings(); b.build_report(F); b.build_actions(F); b.build_gaps(); b.build_limitation()
     b.build_restatements(); _derivation(b); _register(b)
