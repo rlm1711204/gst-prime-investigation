@@ -8,7 +8,7 @@ import datetime, re
 from gpe_core import (REPORT_SPECS, parse_period, period_key, fy_of, fy_long,
                       n0, to_date, inr)
 
-CHECKS_VERSION = "1.4"
+CHECKS_VERSION = "1.5"
 FY_ORDER = ['2021-22','2022-23','2023-24','2024-25','2025-26','2026-27',
             '2027-28','2028-29','2029-30']
 
@@ -250,17 +250,24 @@ def chk_credit_notes(ing, master):
 
 # -------------------------------------------------------- 8. return filing
 def chk_return_filing(ing, master, r1res):
-    if not ing.have('R3B_FILING'): return dict(available=False, missing=['R3B_FILING'])
+    if not ing.have('R3B_FILING') and not ing.have('R3B_MONTHLY'):
+        return dict(available=False, missing=['R3B_FILING or R3B_MONTHLY'])
+    if not master:
+        return dict(available=False, missing=['TAX_PAID'])
     fl = ing.by_period('R3B_FILING')
+    fm = ing.by_period('R3B_MONTHLY')
     rows, late, delay = [], [], 0
     r1map = {r['period']: r['status'] for r in r1res['rows']} if r1res.get('available') else {}
     r2 = ing.by_period('R2A_MONTHLY') if ing.have('R2A_MONTHLY') else {}
     for m in master:
         f = fl.get(m['period'], {})
         d = f.get('Date Of Filing')
+        d2 = fm.get(m['period'], {}).get('Date of Filing')
+        src = 'R3B PAYMENT SUMMARY' if d else ('R3B FILINGS IN THE YEAR' if d2 else '')
+        d = d or d2
         dd = (d - due_date(m['period'])).days if d else None
         if dd and dd > 0: late.append((m['period'], d, dd)); delay += dd
-        rows.append(dict(period=m['period'], fy=m['fy'], filed=d, due=due_date(m['period']),
+        rows.append(dict(period=m['period'], fy=m['fy'], filed=d, due=due_date(m['period']), src=src, filed2=d2,
                          delay=max(0, dd) if dd is not None else None,
                          r1_status=r1map.get(m['period'], 'not tested'),
                          r2a_present=m['period'] in r2,

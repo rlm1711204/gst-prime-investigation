@@ -20,7 +20,7 @@ warnings.filterwarnings('ignore', message='DrawingML support is incomplete')
 from openpyxl.utils import column_index_from_string, get_column_letter
 from gpe_core import parse_period, period_key, fy_of, n0, inr
 
-BO_VERSION = "1.0"
+BO_VERSION = "1.1"
 BO_CODE = 'BO_CMP'
 TOL = 5.0          # rupees: Prime reports whole rupees per head, BO reports paise; up to Rs.5 is rounding
 H4 = ('IGST', 'CGST', 'SGST', 'CESS')
@@ -354,6 +354,10 @@ MEASURES = [
      'EXCESS ITC CLAIMED: SGSTITC Available In R2A', 'ITC other GSTR-2B SGST'),
     ('av_i',   'IGST ITC available: Prime GSTR-2A against BO GSTR-2B',
      'EXCESS ITC CLAIMED: IGSTITC Available In R2A', 'ITC other GSTR-2B IGST + ITC import GSTR-2B IGST'),
+    ('liab_m', 'GSTR-3B total tax liability, all heads incl. cess (outward + export + reverse charge)',
+     'R3B FILINGS IN THE YEAR: Total Tax Liability', 'Outward + Export-SEZ + RCM liability, GSTR-3B, all heads'),
+    ('itc_m',  'GSTR-3B net ITC claimed (IGST+CGST+SGST)',
+     'R3B FILINGS IN THE YEAR: Net ITC Claimed', 'ITC other GSTR-3B net + ITC import GSTR-3B IGST + ITC on RCM'),
     ('short',  'RESULT — output tax short-paid: GSTR-1 minus GSTR-3B (IGST+CGST+SGST)',
      '17_R1_vs_R3B: GSTR-1 tax minus GSTR-3B outward tax', 'GSTR-1 minus GSTR-3B, outward and export-SEZ'),
     ('excess', 'RESULT — excess ITC: availed minus available (IGST+CGST+SGST)',
@@ -377,6 +381,9 @@ READING = {
               'for the month. From 1 January 2022 credit is restricted to what GSTR-2B shows (section 16(2)(aa), Rule 36(4)), '
               'so the BO figure is the one that counts.'),
     'av_i':  'As for SGST: GSTR-2A against GSTR-2B. GSTR-2B governs from 1 January 2022.',
+    'liab_m': ('A second GST-Prime route to the GSTR-3B liability. Prime rounds each head; a larger difference usually means '
+               'interest, late fee or cess counted on one side only, or a different copy of the return.'),
+    'itc_m':  'A second GST-Prime route to the ITC availed. As for ITC availed above.',
     'short': ('Result of the two GSTR-1 and GSTR-3B lines above; any difference there carries through.'),
     'excess':('The notebook measures excess credit against GSTR-2A (and takes CGST equal to SGST); BO measures it head by head '
               'against GSTR-2B. GSTR-2B governs from 1 January 2022, so the BO figure is the one that counts.'),
@@ -387,15 +394,17 @@ def chk_bo(ing, master, r1res=None, exres=None):
         return dict(available=False, missing=[BO_CODE])
     bo = ing.by_period(BO_CODE)
     mrow = {m['period']: m for m in master}
-    tp, tx, r1, ex, fl = (ing.by_period(c) for c in ('TAX_PAID', 'R3B_TAX_PAYABLE', 'R1_MONTHLY', 'EXCESS_ITC', 'R3B_FILING'))
+    tp, tx, r1, ex, fl, fm = (ing.by_period(c) for c in ('TAX_PAID', 'R3B_TAX_PAYABLE', 'R1_MONTHLY', 'EXCESS_ITC', 'R3B_FILING',
+                                                        'R3B_MONTHLY'))
     r1map = {r['period']: r for r in (r1res or {}).get('rows', [])} if (r1res or {}).get('available') else {}
     exmap = {r['period']: r for r in (exres or {}).get('rows', [])} if (exres or {}).get('available') else {}
     months, cmp_rows = [], []
     for p in sorted(bo, key=period_key):
         d = bo[p]; f = bo_month(d); gen = d.get('_generated')
         m = mrow.get(p)
-        filed = (fl.get(p) or {}).get('Date Of Filing')
-        prime_3b = bool(m) and (abs(m['turnover']) > 0.5 or abs(m['out_total']) > 0.5 or abs(m['itc']) > 0.5)
+        filed = (fl.get(p) or {}).get('Date Of Filing') or (fm.get(p) or {}).get('Date of Filing')
+        prime_3b = (bool(m) and (abs(m['turnover']) > 0.5 or abs(m['out_total']) > 0.5 or abs(m['itc']) > 0.5)) or \
+                   any(abs(n0((fm.get(p) or {}).get(k))) > 0.5 for k in ('Total Tax Liability', 'Net ITC Claimed'))
         covered, why = True, ''
         if gen is not None and isinstance(filed, (datetime.date, datetime.datetime)) and \
                 (filed.date() if isinstance(filed, datetime.datetime) else filed) > gen.date():
@@ -426,6 +435,10 @@ def chk_bo(ing, master, r1res=None, exres=None):
             if e.get('IGSTITC Claimed In R3B') is not None: P['itc_i'] = n0(e.get('IGSTITC Claimed In R3B'))
             if e.get('SGSTITC Available In R2A') is not None: P['av_s'] = n0(e.get('SGSTITC Available In R2A'))
             if e.get('IGSTITC Available In R2A') is not None: P['av_i'] = n0(e.get('IGSTITC Available In R2A'))
+        rm = ing.by_period('R3B_MONTHLY').get(p) if ing.have('R3B_MONTHLY') else None
+        if rm:
+            if rm.get('Total Tax Liability') is not None: P['liab_m'] = n0(rm.get('Total Tax Liability'))
+            if rm.get('Net ITC Claimed') is not None: P['itc_m'] = n0(rm.get('Net ITC Claimed'))
         if p in r1map and r1map[p].get('diff') is not None and 'out3b' in P:
             P['short'] = r1map[p]['diff']
         if p in exmap and p in ex:
@@ -434,8 +447,9 @@ def chk_bo(ing, master, r1res=None, exres=None):
              'itc_s': f[('itc3b_net', 'SGST')] + f[('rcmitc', 'SGST')],
              'itc_i': f[('itc3b_net', 'IGST')] + f[('impg3b', 'IGST')] + f[('rcmitc', 'IGST')],
              'av_s': f[('itc2b', 'SGST')], 'av_i': f[('itc2b', 'IGST')] + f[('impg2b', 'IGST')],
-             'short': f['short'], 'excess': f['excess']}
-        ALT = {'itc': f['itc_gross'],
+             'short': f['short'], 'excess': f['excess'],
+             'liab_m': sum(f[('out3b', h)] + f[('rcm3b', h)] for h in H4), 'itc_m': f['itc_net']}
+        ALT = {'itc': f['itc_gross'], 'itc_m': f['itc_gross'],
                'itc_s': f[('itc3b_gross', 'SGST')] + f[('rcmitc', 'SGST')],
                'itc_i': f[('itc3b_gross', 'IGST')] + f[('impg3b', 'IGST')] + f[('rcmitc', 'IGST')]}
         CAND = {'out3b': [('export / SEZ tax of Table 3.1(b)', f['exp3b']), ('reverse-charge tax of Table 3.1(d)', f['rcm3b'])],
@@ -448,6 +462,10 @@ def chk_bo(ing, master, r1res=None, exres=None):
                 'itc_i': [('Table 4B reversal (IGST)', f[('itc3b_gross', 'IGST')] - f[('itc3b_net', 'IGST')]),
                           ('import IGST of Table 4A(1)', f[('impg3b', 'IGST')]), ('IGST ITC on reverse charge', f[('rcmitc', 'IGST')])],
                 'av_i': [('import IGST in GSTR-2B (IMPG)', f[('impg2b', 'IGST')])],
+                'liab_m': [('cess', sum(f[(k, 'CESS')] for k in ('out3b', 'rcm3b'))), ('reverse-charge tax of Table 3.1(d)', f['rcm3b']),
+                           ('export / SEZ tax of Table 3.1(b)', f['exp3b'])],
+                'itc_m': [('Table 4B reversal', f['reversal']), ('import IGST of Table 4A(1)', f[('impg3b', 'IGST')]),
+                          ('ITC on reverse charge of Table 4A(2)+4A(3)', sum(f[('rcmitc', h)] for h in H3))],
                 'short': [('export / SEZ tax', f['exp3b'] - f['expr1'])],
                 'excess': [('CGST, which the notebook takes as equal to SGST', f[('itc_excess', 'CGST')] - f[('itc_excess', 'SGST')]),
                            ('Table 4B reversal, which BO deducts from the credit availed', f['reversal'])]}
@@ -570,7 +588,10 @@ BO_TERMS = {
               + _t('ITC import', 'GSTR-3B', ('IGST',)) + _t('ITC import', 'GSTR-2B', ('IGST',), -1),
 }
 BO_TERMS['short'] = BO_TERMS['r1'] + [(-s, f) for s, f in BO_TERMS['out3b']]
+BO_TERMS['liab_m'] = _t('Outward', 'GSTR-3B', H4) + _t('Export-SEZ', 'GSTR-3B', H2) + _t('RCM liability', 'GSTR-3B', H4)
+BO_TERMS['itc_m'] = BO_TERMS['itc']
 ALT_TERMS = {
+    'itc_m': _t('ITC other', 'GSTR-3B gross', H3) + _t('ITC import', 'GSTR-3B', ('IGST',)) + _t('ITC on RCM', 'GSTR-3B', H3),
     'itc': _t('ITC other', 'GSTR-3B gross', H3) + _t('ITC import', 'GSTR-3B', ('IGST',)) + _t('ITC on RCM', 'GSTR-3B', H3),
     'itc_s': _t('ITC other', 'GSTR-3B gross', ('SGST',)) + _t('ITC on RCM', 'GSTR-3B', ('SGST',)),
     'itc_i': _t('ITC other', 'GSTR-3B gross', ('IGST',)) + _t('ITC import', 'GSTR-3B', ('IGST',)) + _t('ITC on RCM', 'GSTR-3B', ('IGST',)),
@@ -600,6 +621,8 @@ def _prime_formula(b, mid, ref):
     if mid == 'itc_i':  return '=' + L('EXCESS_ITC', 'IGSTITC Claimed In R3B')
     if mid == 'av_s':   return '=' + L('EXCESS_ITC', 'SGSTITC Available In R2A')
     if mid == 'av_i':   return '=' + L('EXCESS_ITC', 'IGSTITC Available In R2A')
+    if mid == 'liab_m': return '=' + L('R3B_MONTHLY', 'Total Tax Liability')
+    if mid == 'itc_m':  return '=' + L('R3B_MONTHLY', 'Net ITC Claimed')
     if mid == 'short':  return f"={L('R1_MONTHLY', 'Total GST')}-{L('R3B_TAX_PAYABLE', 'Outward Total GST')}"
     if mid == 'excess': return f"=2*{L('EXCESS_ITC', 'SGSTExcess Claimed')}+{L('EXCESS_ITC', 'IGSTExcess Claimed')}"
     return ''

@@ -8,7 +8,7 @@ import os, re, json, hashlib, datetime, shutil
 from collections import OrderedDict
 import openpyxl
 
-ENGINE_VERSION = "1.8"
+ENGINE_VERSION = "1.9"
 
 # ----------------------------------------------------------------- helpers
 MONTHS = {m: i for i, m in enumerate(
@@ -131,7 +131,9 @@ REPORT_SPECS = OrderedDict([
     key='Return Period', grain='period_multi', fname=r'HSN_LIST',
     title='HSN summary (GSTR-1 Table 12)')),
  ('GSTR9', dict(
-    must={'Return Period','Date of Filing'},
+    # exact=True: the GSTR-9 export has ONLY these columns. 'R3B FILINGS IN THE YEAR' also carries Return Period and
+    # Date of Filing, and before v1.14 was taken for GSTR-9 because of it.
+    must={'Return Period','Date of Filing'}, exact=True,
     key='Return Period', grain='fy', fname=r'GSTR9_FILING_DETAILS',
     title='GSTR-9 annual return filing details')),
  ('R1_MONTHLY', dict(
@@ -167,6 +169,16 @@ REPORT_SPECS = OrderedDict([
     key='Return Period', grain='period_multi', fname=r'R7_Filing_Details_For_The_Month', master=False,
     period_from_filename=True,
     title='GSTR-7 filing details for one month — party by party, with taxable value')),
+ ('R3B_MONTHLY', dict(
+    must={'Return Period','Date of Filing','Outward Taxable Supplies(Other Than Zero)','Net ITC Claimed',
+          'Total Cash Paid','Total Tax Liability'},
+    key='Return Period', grain='period', fname=r'R3B_FILINGS_IN_THE_YEAR', master=False,
+    title='GSTR-3B filings, month-wise: date of filing, supplies by type, net ITC, cash paid, tax liability')),
+ ('R3B_FY_FILING', dict(
+    must={'Financial Year','Return Period Count','Outward Taxable Supplies(Other Than Zero)','Net ITC Claimed',
+          'Total GST Paid','Total Tax Liability'},
+    key='Financial Year', grain='fy', fname=r'GST-R3B_FILING_SUMMARY',
+    title='GSTR-3B filing summary, FY level: returns filed, supplies by type, net ITC, cash paid, tax liability')),
  ('R1_FY_SUMMARY', dict(
     must={'Financial Year','Filing Count','No Of Sellers','No Of Invoices','Total GST'},
     key='Financial Year', grain='fy', fname=r'GST-R1_FILING_SUMMARY',
@@ -227,6 +239,8 @@ def detect(header, filename):
         must = sp['must']
         if not must <= hs:
             continue
+        if sp.get('exact') and (hs - must - {'SNo'}):
+            continue                      # carries columns this report never has: it is some other report
         score = len(must) / max(len(hs), 1)
         fn_ok = bool(re.search(sp['fname'].replace('-', '_'), filename, re.I))
         score += 0.5 if fn_ok else 0.0
@@ -440,6 +454,15 @@ class Ingest:
             notes.append(f'Tax period {dperiod} taken from the FILE NAME — the export carries no period inside it. '
                          f'Keep the Prime file name unchanged.')
         parsed = parse_rows(header, rows, hdr_i, code, default_period=dperiod)
+        data_rows = sum(1 for r in rows[hdr_i + 1:] if r and r[0] is not None
+                        and str(r[0]).strip().lower() not in ('sub total', 'total', 'grand total'))
+        if not parsed and data_rows:
+            # The header matched, but not one row could be read as this report (wrong period format, say). Counting it
+            # would hide a mis-identification behind a 'COUNTED' with 0 rows, so it is refused and named.
+            rec.update(code=code, title=REPORT_SPECS[code]['title'], status='NOT RECOGNISED',
+                       note=f'The header looks like {code} ({why}), but none of its {data_rows} data row(s) could be read as '
+                            f'that report. Nothing has been taken from it. Report this file so the reader can be extended.')
+            self.register.append(rec); return rec
         rec.update(code=code, title=REPORT_SPECS[code]['title'], rows=len(parsed), status='COUNTED')
         if self.case_gstin and rec['subject_gstin'] and rec['subject_gstin'] != self.case_gstin:
             notes.append(f'WRONG TAXPAYER? This export is titled for GSTIN {rec["subject_gstin"]}, not {self.case_gstin}.')

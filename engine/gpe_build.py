@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 from gpe_core import REPORT_SPECS, period_key, fy_of, n0, inr
 from gpe_checks import due_date
 
-BUILD_VERSION = "1.9"
+BUILD_VERSION = "1.10"
 BOLD = Font(bold=True)
 THIN = Side(style='thin')
 BD = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -631,8 +631,9 @@ class Builder:
         if not res.get('available'): return self.unavailable(ws, res, 'RETURN FILING RECORD')
         ws['A1'] = 'RETURN FILING RECORD — DATE OF FILING AGAINST THE STATUTORY DUE DATE'; ws['A1'].font = BOLD
         self.head(ws, 3, ['Return Period','FY','GSTR-3B date of filing','Statutory due date','Delay in days',
-                          'GSTR-1 status','GSTR-2A report present?','3B turnover','3B output tax'],
-                  [13,9,20,20,12,27,18,16,16])
+                          'GSTR-1 status','GSTR-2A report present?','3B turnover','3B output tax',
+                          'Date of filing taken from','Date per R3B FILINGS IN THE YEAR','Do the two dates agree?'],
+                  [13,9,20,20,12,27,18,16,16,24,20,16])
         for i, row in enumerate(res['rows'], 4):
             mr = i
             ws.cell(row=i, column=1, value=row['period']); ws.cell(row=i, column=2, value=row['fy'])
@@ -645,16 +646,19 @@ class Builder:
             if not row['r2a_present'] and self.mark: c2.fill = MISSING_FILL
             ws.cell(row=i, column=8, value=f'={self.m("D", mr)}')
             ws.cell(row=i, column=9, value=f'={self.m("J", mr)}')
+            ws.cell(row=i, column=10, value=row.get('src') or 'NOT ON RECORD')
+            c = ws.cell(row=i, column=11, value=row.get('filed2')); c.number_format = 'DD-MM-YYYY'
+            ws.cell(row=i, column=12, value=f'=IF(OR(C{i}="",K{i}=""),"",IF(INT(C{i})=INT(K{i}),"yes","DIFFER"))')
         r = 3 + len(res['rows']) + 1
         ws.cell(row=r, column=1, value='TOTAL').font = BOLD
         for c in [5,8,9]:
             LL = get_column_letter(c); ws.cell(row=r, column=c, value=f'=SUM({LL}4:{LL}{r-1})').font = BOLD
         ws.cell(row=r+1, column=1, value='Tax periods filed after the due date').font = BOLD
         ws.cell(row=r+1, column=5, value=f'=COUNTIF(E4:E{r-1},">0")').font = BOLD
-        self.box(ws, 4, r+1, 1, 9, numfrom=5)
+        self.box(ws, 4, r+1, 1, 12, numfrom=5)
         for i in range(4, r+2):
-            for c in (3,4): ws.cell(row=i, column=c).number_format = 'DD-MM-YYYY'
-            for c in (6,7): ws.cell(row=i, column=c).number_format = 'General'
+            for c in (3,4,11): ws.cell(row=i, column=c).number_format = 'DD-MM-YYYY'
+            for c in (6,7,10,12): ws.cell(row=i, column=c).number_format = 'General'
         self.delay_cell = f"'18_RETURN_FILING'!E{r}"
         n = self.note(ws, r+3, 'The due date is taken as the 20th of the month following the tax period, the monthly filer '
                                'date. If the taxpayer was on QRMP in any period, that period must be re-set before late fee '
@@ -2005,6 +2009,8 @@ DRIVES = {
  'R1_FY_SUMMARY':'FY-level cross-check of the GSTR-1 totals.',
  'R7_DETAIL':'Party-wise GSTR-7 detail for a month: who deducted, on what taxable value; tested against section 51.',
  'BO_CMP':__import__('gpe_bo').DRIVES_TEXT,
+ 'R3B_MONTHLY':'Date of filing (a second source for 18_RETURN_FILING), and GSTR-3B net ITC and total tax liability month by month, compared with the BO report on 19E.',
+ 'R3B_FY_FILING':'GSTR-3B FY totals: returns filed, supplies by type, net ITC, cash paid, tax liability.',
  'R7_TDS':'Tax deducted under section 51: the value of supplies the deductors paid for, tested against GSTR-3B and GSTR-1.',
 }
 EXTERNAL = [
