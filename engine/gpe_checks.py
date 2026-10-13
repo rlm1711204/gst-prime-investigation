@@ -8,7 +8,7 @@ import datetime, re
 from gpe_core import (REPORT_SPECS, parse_period, period_key, fy_of, fy_long,
                       n0, to_date, inr)
 
-CHECKS_VERSION = "1.3"
+CHECKS_VERSION = "1.4"
 FY_ORDER = ['2021-22','2022-23','2023-24','2024-25','2025-26','2026-27',
             '2027-28','2028-29','2029-30']
 
@@ -720,4 +720,6 @@ def run_all(ing, rate_master=None):
         unfiled=unfiled_periods(ing),
     )
     res['hsn_rate'] = chk_hsn_rate(ing, res['hsn'], rate_master)
+    from gpe_bo import chk_bo
+    res['bo'] = chk_bo(ing, m, r1, res['excess_itc'])
     return res

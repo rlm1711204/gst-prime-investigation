@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 from gpe_core import REPORT_SPECS, period_key, fy_of, n0, inr
 from gpe_checks import due_date
 
-BUILD_VERSION = "1.8"
+BUILD_VERSION = "1.9"
 BOLD = Font(bold=True)
 THIN = Side(style='thin')
 BD = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -1238,8 +1238,14 @@ class Builder:
         ws.column_dimensions['A'].width = 18
 
     # ------------------------------------------------------- 20 FINDINGS
-    def findings(self):
+    def _bo_cov(self, use_bo=True):
+        """Tax periods for which the BO comparison report is taken as final."""
+        bo = self.R.get('bo') or {}
+        return set(bo.get('covered') or ()) if (use_bo and bo.get('available')) else set()
+
+    def findings(self, use_bo=True):
         R = self.R; F = []
+        cov = self._bo_cov(use_bo)
         cn = R['credit_notes']
         if cn.get('available'):
             for e in cn['events']:
@@ -1275,7 +1281,14 @@ class Builder:
                       'proceeding was on foot in that period.',
                     r='VERY HIGH — lead'))
         ex = R['excess_itc']; i2 = R['itc_vs_2a']
-        if ex.get('available'):
+        ex_rows = [x for x in ex.get('rows', []) if x['period'] not in cov]
+        ex_cov = len(ex.get('rows', [])) - len(ex_rows)
+        if ex.get('available') and cov:
+            ex = dict(ex, rows=ex_rows, net=sum(x['total'] for x in ex_rows), gross=sum(x['positive'] for x in ex_rows),
+                      months_excess=sum(1 for x in ex_rows if x['sgst_excess'] > 0.5 or x['igst_excess'] > 0.5),
+                      months_excess_sgst=sum(1 for x in ex_rows if x['sgst_excess'] > 0.5),
+                      months_excess_igst=sum(1 for x in ex_rows if x['igst_excess'] > 0.5))
+        if ex.get('available') and ex['rows']:
             corr = ''
             if i2.get('available') and i2.get('annual'):
                 worst = max(i2['annual'].items(), key=lambda kv: kv[1]['gap'], default=None)
@@ -1288,19 +1301,24 @@ class Builder:
                 w=(f'ITC availed in GSTR-3B exceeds credit available in GSTR-2A, in at least one head, in '
                    f'{ex["months_excess"]} of the {len(ex["rows"])} tax periods (SGST in {ex["months_excess_sgst"]}, '
                    f'IGST in {ex["months_excess_igst"]}). Net excess after setting off the periods of short claim is '
-                   f'Rs.{inr(ex["net"])}; gross, counting only periods of over-claim, Rs.{inr(ex["gross"])}.' + corr),
+                   f'Rs.{inr(ex["net"])}; gross, counting only periods of over-claim, Rs.{inr(ex["gross"])}.' + corr
+                   + (f' The other {ex_cov} period(s) are covered by the BO comparison report and are taken from it (against '
+                      f'GSTR-2B) in the finding made on the BO figures.' if ex_cov else '')),
                 a=ex['net'], s='13_EXCESS_ITC; 19A_ITC_vs_2A',
                 p='Section 16(2)(aa) and Rule 36(4). Rule 88D / FORM DRC-01C. Rule 86A for blocking.',
                 r='VERY HIGH'))
         r1 = R['r1_vs_r3b']
         if r1.get('available'):
-            det = [x for x in r1['rows'] if x['short'] > 1]
+            det = [x for x in r1['rows'] if x['short'] > 1 and x['period'] not in cov]
+            n_cov = sum(1 for x in r1['rows'] if x['short'] > 1 and x['period'] in cov)
             if det:
                 F.append(dict(
                     t='Output tax declared in GSTR-1 but not discharged in GSTR-3B',
                     w=('; '.join(f'{x["period"]} Rs.{inr(x["short"])}' for x in det)
-                       + f'. Rs.{inr(r1["short_total"])} in all.'),
-                    a=r1['short_total'], s='17_R1_vs_R3B',
+                       + f'. Rs.{inr(sum(x["short"] for x in det))} in all.'
+                       + (f' {n_cov} other period(s) of shortfall are covered by the BO comparison report and are taken '
+                          f'from it in the finding made on the BO figures.' if n_cov else '')),
+                    a=sum(x['short'] for x in det), s='17_R1_vs_R3B',
                     p=('Section 75(12) with Explanation — self-assessed tax includes tax payable on outward supplies '
                        'declared in GSTR-1 but not included in GSTR-3B; recoverable under section 79 without a show '
                        'cause notice. Rule 88C / FORM DRC-01B.'),
@@ -1329,7 +1347,7 @@ class Builder:
                 r='HIGH'))
         rc = R['rcm']
         if rc.get('available') and (rc['silent_periods'] >= 12 or rc['value_without_tax']):
-            amt = sum(v * 0.05 for _, v in rc['value_without_tax'])
+            amt = sum(v * 0.05 for p, v in rc['value_without_tax'] if p not in cov)
             F.append(dict(
                 t='Reverse charge liability not declared',
                 w=(f'Reverse-charge inward supplies totalling Rs.{inr(rc["declared"])} were declared up to '
@@ -1391,6 +1409,9 @@ class Builder:
         F += self._tds_findings()
         F += self._tds_detail_findings()
         F += self._hsn_rate_findings()
+        if use_bo:
+            from gpe_bo import bo_findings
+            F += bo_findings(R)
         rev = [c for c in self.ing.changes if c['level'] == 'REVIEW']
         if rev:
             reps = sorted({c['title'] for c in rev})
@@ -1622,6 +1643,7 @@ class Builder:
                 x.alignment = Alignment(wrap_text=True, vertical='top')
                 if c == 4: x.number_format = NUM
         self.total_findings = sum(f['a'] for f in F)
+        self.findings_total_cell = f"'20_FINDINGS'!D{r}"
         n = self.note(ws, r+2, f'Rs. {inr(self.total_findings)} before interest and penalty.', bold=True)
         n = self.note(ws, n, 'OVERLAP CAUTION: where the same credit is caught by more than one finding — for example '
                              'credit availed in a NIL period that is also in excess of GSTR-2A — the amount must not be '
@@ -1647,7 +1669,9 @@ class Builder:
         T = [f'PRELIMINARY INVESTIGATION REPORT — ANALYSIS OF GST RETURNS DATA',
              f'{self.name.upper()}', f'GSTIN {self.gstin}', '',
              '1. SUBJECT', '',
-             (f'Analysis of {len(self.ing.counted())} unique GST-Prime Analytica statements covering '
+             (f'Analysis of {len(self.ing.counted())} unique '
+              + ('statements (GST-Prime Analytica exports and BO comparison reports) ' if self.ing.have('BO_CMP')
+                 else 'GST-Prime Analytica statements ') + f'covering '
               f'{span}, to identify '
               f'indicators of evasion and to quantify the revenue at stake. '
               + (f'{len(self.ing.register)} files were received; {len(self.ing.duplicates())} were exact duplicates of '
@@ -1655,9 +1679,12 @@ class Builder:
                  if self.ing.duplicates() else '')
               + 'The register is at sheet 09_FILE_REGISTER.'), '',
              '2. WHAT THE RETURNS SHOW IN OUTLINE', '']
+        bo_ok = (R.get('bo') or {}).get('available')
         if not fys:
-            T += [('2.1  No GSTR-3B report has been supplied, so the taxpayer\'s own declarations are not yet before this '
-                   'analysis. What follows rests on the third-party statements held.'), '']
+            T += [(('2.1  No GST-Prime GSTR-3B report has been supplied. The taxpayer\'s GSTR-3B, GSTR-1 and GSTR-2B figures '
+                    'used below are those of the BO comparison report (2.7).') if bo_ok else
+                   ('2.1  No GSTR-3B report has been supplied, so the taxpayer\'s own declarations are not yet before this '
+                   'analysis. What follows rests on the third-party statements held.')), '']
         else:
           T += [(f'2.1  Across the whole period the unit declared turnover of Rs.{inr(tot_to)}, output tax of '
                f'Rs.{inr(tot_op)} and availed input tax credit of Rs.{inr(tot_itc)}'
@@ -1693,6 +1720,8 @@ class Builder:
                       f'private proprietors holding tax-deductor registrations — not persons who may deduct under section 51. '
                       if dd['ineligible'] else '')
                    + (f'Detail for {", ".join(dd["missing_months"])} is still to be uploaded.' if dd['missing_months'] else '')), '']
+        from gpe_bo import bo_report_lines
+        T += bo_report_lines(R)
         T += ['3. PRINCIPAL FINDINGS', '']
         for i, f in enumerate(sorted(F, key=_frank), 1):
             T += [f'3.{i}  {f["t"]}.  {f["w"]}'
@@ -1708,7 +1737,8 @@ class Builder:
                'which requires fraud, wilful misstatement or suppression of facts to be alleged and made out on evidence. '
                'That decision has to be taken before the evidence is gathered, not after.'), '',
               '6. CAVEATS', '',
-              ('6.1  This report is built only from the GST-Prime Analytica statements listed at sheet 09_FILE_REGISTER. '
+              ('6.1  This report is built only from the GST-Prime Analytica statements'
+               + (' and BO comparison reports' if self.ing.have('BO_CMP') else '') + ' listed at sheet 09_FILE_REGISTER. '
                'It is a preliminary investigation on returns data and is not a finding of fact.'), '',
               ('6.2  Nothing has been estimated, interpolated or assumed. Where a report was not supplied, the test that '
                'needed it says so and was not run. Where a cell was blank in the source it has been kept blank, because a '
@@ -1720,6 +1750,11 @@ class Builder:
                   'throughout. Sheet 09A_RESTATEMENTS lists each difference with both values and the files they came from. '
                   'Verify on the portal before relying on either.'), '')
                 if any(c['level'] == 'REVIEW' for c in self.ing.changes) else ()),
+              *((('6.4A  Where the BO comparison report covers a month, its figures are taken as final in place of the '
+                  'GST-Prime figures, because it is the department\'s own comparison on which Rule 88C and Rule 88D intimations '
+                  'are generated, it reads GSTR-1 as amended and GSTR-2B as fixed for the month, and it carries the time it was '
+                  'generated. The GST-Prime figures remain on their sheets; 19E lists every difference and 19G what changed.'), '')
+                if (R.get('bo') or {}).get('available') else ()),
               ('6.5  Every figure is to be re-verified against the common portal, the electronic credit and cash ledgers, '
                'GSTR-1, GSTR-2A and 2B, GSTR-9 and 9C and the books of account before any notice is issued.')]
         for i, t in enumerate(T, 1):
@@ -1758,13 +1793,15 @@ class Builder:
                               f'no GSTR-1 existing on the portal for those periods.',
                       f'Rs.{inr(r1["not_filed_turnover"])} of turnover sits in GSTR-3B with no invoice-level record. '
                       'Identify the recipients and confirm the supplies took place.', 'Section 37, section 70, section 71'])
-        if r1.get('available') and r1['short_total'] > 0:
+        cov = self._bo_cov()
+        r1_short = sum(x['short'] for x in r1.get('rows', []) if x['period'] not in cov) if r1.get('available') else 0
+        if r1.get('available') and r1_short > 0:
             A.append(['HIGH', f'Issue the Rule 88C intimation in FORM DRC-01B for the GSTR-1 versus GSTR-3B difference of '
-                              f'Rs.{inr(r1["short_total"])}.',
+                              f'Rs.{inr(r1_short)}' + (' (months not covered by a BO comparison report).' if cov else '.'),
                       'Self-assessed tax under the Explanation to section 75(12), recoverable under section 79 without a '
                       'show cause notice and needing no investigation to establish. The fastest realisation in the case.',
                       'Rule 88C, FORM DRC-01B, section 75(12), section 79'])
-        if R['excess_itc'].get('available') and R['excess_itc']['net'] > 0:
+        if R['excess_itc'].get('available') and sum(x['total'] for x in R['excess_itc']['rows'] if x['period'] not in cov) > 0:
             A.append(['HIGH', 'Issue the Rule 88D intimation in FORM DRC-01C and obtain the supplier-wise break-up for the '
                               'years carrying the excess.',
                       'The supplier trail has to be established on documents — whether the suppliers are traceable, whether '
@@ -1776,6 +1813,8 @@ class Builder:
                       'Credit taken against no outward supply must be shown to relate to inputs used or intended to be used '
                       'in business.', 'Section 16(1), section 17(5), section 70'])
         A += self._tds_actions()
+        from gpe_bo import bo_actions
+        A += bo_actions(R)
         hr = R.get('hsn_rate') or {}
         if hr.get('available'):
             if not hr['master'] or hr['no_entry']:
@@ -1793,7 +1832,8 @@ class Builder:
                                   'establish the description of the goods and the correct classification.',
                           'The rate follows the description; the HSN code is the taxpayer\'s own choice.',
                           'Section 70, section 9, Customs Tariff rules of interpretation'])
-        A += [['HIGH', 'Draw the electronic credit and cash ledgers from registration to date, and GSTR-2B for every period.',
+        A += [['HIGH', 'Draw the electronic credit and cash ledgers from registration to date, and GSTR-2B for every period'
+                       + (' (supplier-wise: the BO comparison report gives only the monthly totals).' if cov else '.'),
                'GSTR-2B and not 2A governs entitlement after 1 January 2022, and only the ledgers settle the CGST '
                'assumptions and confirm the true cash position.', 'Section 151, Rule 36(4), Rule 60'],
               ['HIGH', 'Conduct a physical verification of the declared place of business.',
@@ -1928,7 +1968,11 @@ class Builder:
                                          if hr.get('no_entry') else '')) if hr.get('master') else
                 'Load it in the notebook (Rate master cell).')
         r += 1
+        bo = self.R.get('bo') or {}
         for x in EXTERNAL:
+            if x[0] == 'GSTR-2B for every period' and bo.get('available'):
+                x = (x[0], x[1], 'Monthly GSTR-2B totals are in the BO comparison report for FY ' + ', '.join(bo['fys'])
+                                 + '. The supplier-wise 2B is still to be drawn from the portal.')
             ws.cell(row=r, column=1, value='NOT IN GST-PRIME')
             if self.mark: ws.cell(row=r, column=1).fill = MISSING_FILL
             ws.cell(row=r, column=2, value=x[0]); ws.cell(row=r, column=3, value=x[1])
@@ -1960,6 +2004,7 @@ DRIVES = {
  'R2A_FY_SUMMARY':'FY-level cross-check of the credit available.',
  'R1_FY_SUMMARY':'FY-level cross-check of the GSTR-1 totals.',
  'R7_DETAIL':'Party-wise GSTR-7 detail for a month: who deducted, on what taxable value; tested against section 51.',
+ 'BO_CMP':__import__('gpe_bo').DRIVES_TEXT,
  'R7_TDS':'Tax deducted under section 51: the value of supplies the deductors paid for, tested against GSTR-3B and GSTR-1.',
 }
 EXTERNAL = [
@@ -2011,7 +2056,8 @@ def _register(b):
         ws.cell(row=i, column=10, value=r['declared'] if r['declared'] is not None else '')
         c = ws.cell(row=i, column=11, value=r['status'])
         if r['status'] != 'COUNTED' and b.mark: c.fill = MISSING_FILL
-        ws.cell(row=i, column=12, value=r['note'] or r['detect_note'] or '')
+        ws.cell(row=i, column=12, value=((r.get('detect_note') or '') + ' ' + (r['note'] or '')).strip()
+                if r.get('code') == 'BO_CMP' else (r['note'] or r['detect_note'] or ''))
     last = 4 + len(ing.register)
     for rr in range(5, last+1):
         for c in range(1, 13):
@@ -2038,11 +2084,12 @@ def _register(b):
                   'every total built on the overlapping records.', bold=True)
 
 def _derivation(b):
+    import gpe_bo
     ws = b.sheet('08_DERIVATION_LOGIC')
     ws['A1'] = 'DERIVATION LOGIC — every derived column, its formula, its source and the reason for deriving it'
     ws['A1'].font = BOLD
     b.head(ws, 3, ['Sheet','Derived column','Formula logic','Source read','Reason / legal basis'], [24,28,46,28,86])
-    for i, row in enumerate(DERIV, 4):
+    for i, row in enumerate(DERIV + (gpe_bo.DERIV_ROWS if (b.R.get('bo') or {}).get('available') else []), 4):
         for j, v in enumerate(row, 1):
             c = ws.cell(row=i, column=j, value=Builder._safe(v)); c.border = BD
             c.alignment = Alignment(wrap_text=True, vertical='top')
@@ -2159,10 +2206,13 @@ def _index(b, version, run_dt):
     rows += [['Period covered', cover, ''],
              ['Periods with no GSTR-3B', ', '.join(b.R.get('unfiled') or []) or 'none'
                  + ('  (kept out of the period count and the NIL tests)' if b.R.get('unfiled') else ''), ''],
-             ['Reports relied on', f'{len(b.ing.counted())} unique GST-Prime statements '
-                                   f'({len(b.ing.register)} files received, {len(b.ing.duplicates())} exact duplicates '
+             ['Reports relied on', f'{len(b.ing.counted())} unique ' + ('statements (GST-Prime and BO) ' if b.ing.have('BO_CMP') else 'GST-Prime statements ')
+                                   + f'({len(b.ing.register)} files received, {len(b.ing.duplicates())} exact duplicates '
                                    f'excluded) — see 09_FILE_REGISTER', ''],
              ['Revenue implication', f'Rs. {inr(b.total_findings)} before interest and penalty — see 20_FINDINGS', ''],
+             *([['BO comparison report', 'FY ' + ', '.join(b.R['bo']['fys']) + ' — taken as final for the months it covers. '
+                 f'GST-Prime alone would give Rs. {inr(b.total_before_bo)}; see 19E (differences), 19F (final position) and '
+                 '19G (what changed).', '']] if (b.R.get('bo') or {}).get('available') else []),
              ['', '', ''],
              ['HOW THIS WORKBOOK IS PUT TOGETHER', '', ''],
              ['SRC_ sheets', 'Every GST-Prime report, reproduced exactly as received. No value altered. A cell shaded '
@@ -2170,7 +2220,7 @@ def _index(b, version, run_dt):
              ['08_DERIVATION_LOGIC', 'For every derived column: the formula, the source it reads, and the reason for '
                                      'deriving it.', ''],
              ['09_FILE_REGISTER', 'Every file received, with checksum, what it was identified as, and whether it was counted.', ''],
-             ['10 to 19D', 'The computation sheets. Every figure is a live Excel formula reading an SRC_ sheet or the '
+             ['10 to 19G', 'The computation sheets. Every figure is a live Excel formula reading an SRC_ sheet or the '
                            'monthly master — nothing is retyped.', ''],
              ['20 to 24', 'Findings, report, action points, data position and limitation.', ''],
              ['', '', ''],
@@ -2221,6 +2271,7 @@ SHEET_NOTE = {
  '19D_TDS_PARTIES':'GSTR-7 party by party: who deducted, whether section 51 allows them to, and the month reconciliation.',
  '19C_TDS_GSTR7':'What the deductors paid for (GSTR-7 TDS / 2%) against GSTR-3B and GSTR-1; the legal cross-checks.',
  '20_FINDINGS':'Consolidated findings with quantification.',
+ **__import__('gpe_bo').SHEET_NOTES,
  '21_REPORT':'The report in narrative form.',
  '22_ACTION_POINTS':'What to do, in the order to do it.',
  '23_DATA_GAPS':'What is held and what is still required.',
@@ -2230,7 +2281,8 @@ SHEET_NOTE = {
 ORDER_HINT = ['00_INDEX'] + [f'SRC_{c}'[:31] for c in REPORT_SPECS] + ['SRC_RATE_MASTER'] + \
              ['08_DERIVATION_LOGIC','09_FILE_REGISTER','09A_RESTATEMENTS','10_MONTHLY_MASTER','11_FY_SUMMARY','12_HSN_PROFILE','12A_HSN_RATE_CHECK',
               '13_EXCESS_ITC','14_DORMANCY_ITC','15_RULE_86B','16_RCM_CHECK','17_R1_vs_R3B','18_RETURN_FILING',
-              '19_CASH_RECON','19A_ITC_vs_2A','19B_CREDIT_NOTES','19C_TDS_GSTR7','19D_TDS_PARTIES','20_FINDINGS','21_REPORT','22_ACTION_POINTS',
+              '19_CASH_RECON','19A_ITC_vs_2A','19B_CREDIT_NOTES','19C_TDS_GSTR7','19D_TDS_PARTIES',
+              '19E_BO_vs_NOTEBOOK','19F_BO_FINAL_POSITION','19G_CHANGE_REPORT','20_FINDINGS','21_REPORT','22_ACTION_POINTS',
               '23_DATA_GAPS','24_LIMITATION']
 
 def build_workbook(ing, R, gstin, name, out_path, mark_missing_light_red=True, profile=None):
@@ -2239,7 +2291,13 @@ def build_workbook(ing, R, gstin, name, out_path, mark_missing_light_red=True, p
     b.build_master(); b.build_fy()
     b.build_hsn(); b.build_hsn_rate(); b.build_excess(); b.build_dormancy(); b.build_86b(); b.build_rcm()
     b.build_r1(); b.build_filing(); b.build_cash(); b.build_itc_2a(); b.build_credit_notes(); b.build_tds(); b.build_tds_parties()
-    F = b.build_findings(); b.build_report(F); b.build_actions(F); b.build_gaps(); b.build_limitation()
+    import gpe_bo
+    gpe_bo.build_compare(b); gpe_bo.build_position(b)
+    F_before = b.findings(use_bo=False)
+    b.total_before_bo = sum(f['a'] for f in F_before)
+    F = b.build_findings()
+    gpe_bo.build_changes(b, F, F_before, b.findings_total_cell)
+    b.build_report(F); b.build_actions(F); b.build_gaps(); b.build_limitation()
     b.build_restatements(); _derivation(b); _register(b)
     _index(b, BUILD_VERSION, datetime.datetime.now())
     names = [s for s in ORDER_HINT if s in b.wb.sheetnames] + \

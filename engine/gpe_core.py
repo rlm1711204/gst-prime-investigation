@@ -8,7 +8,7 @@ import os, re, json, hashlib, datetime, shutil
 from collections import OrderedDict
 import openpyxl
 
-ENGINE_VERSION = "1.7"
+ENGINE_VERSION = "1.8"
 
 # ----------------------------------------------------------------- helpers
 MONTHS = {m: i for i, m in enumerate(
@@ -171,6 +171,11 @@ REPORT_SPECS = OrderedDict([
     must={'Financial Year','Filing Count','No Of Sellers','No Of Invoices','Total GST'},
     key='Financial Year', grain='fy', fname=r'GST-R1_FILING_SUMMARY',
     title='GSTR-1 filing summary, FY level')),
+ # Not a GST-Prime export: the BO portal's own comparison, read by gpe_bo (it has no 'SNo' header row).
+ ('BO_CMP', dict(
+    must={'__BO_COMPARISON_REPORT__'},
+    key='Return Period', grain='period', fname=r'Tax_liability_and_ITC_comparison', master=False,
+    title='BO comparison report — tax liability and ITC: GSTR-1 and GSTR-2B against GSTR-3B (BO portal)')),
 ])
 
 DATE_COLS = {'Date of Filing','Date Of Filing','Payment Date'}
@@ -404,6 +409,9 @@ class Ingest:
             rec.update(status='DUPLICATE - NOT COUNTED',
                        note=f'Byte-identical to {self._seen_md5[h]}. Adds nothing; excluded from every count.')
             self.register.append(rec); return rec
+        from gpe_bo import is_bo_file, add_bo
+        if is_bo_file(path):          # the BO portal's comparison report: its own reader, its own merge rule
+            return add_bo(self, path, rec, batch)
         try:
             hdr_i, header, declared, rows = read_sheet(path)
         except Exception as e:
