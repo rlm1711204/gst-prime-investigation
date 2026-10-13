@@ -20,7 +20,7 @@ warnings.filterwarnings('ignore', message='DrawingML support is incomplete')
 from openpyxl.utils import column_index_from_string, get_column_letter
 from gpe_core import parse_period, period_key, fy_of, n0, inr
 
-BO_VERSION = "1.1"
+BO_VERSION = "1.2"
 BO_CODE = 'BO_CMP'
 TOL = 5.0          # rupees: Prime reports whole rupees per head, BO reports paise; up to Rs.5 is rounding
 H4 = ('IGST', 'CGST', 'SGST', 'CESS')
@@ -139,7 +139,18 @@ def read_bo(path):
     wb = openpyxl.load_workbook(path, data_only=True)
     meta = _meta(wb)
     notes, rows = [], {}
-    for section, sheet, blocks in LAYOUT:
+    # Reports generated up to about 2022 carry ONE GSTR-3B block on the ITC sheet, already net of the Table 4B reversal
+    # ("4A(4)+4A(5)-4B(1)-4B(2)"), and no before-reversal block. Later reports carry both.
+    old_itc = False
+    if 'ITC (Other than IMPG)' in wb.sheetnames:
+        g = _grid(wb['ITC (Other than IMPG)']); loc = _locate(g)
+        if loc and loc[1]:
+            t = ' '.join(str(g[r][1] or '') for r in range(loc[0], loc[1][0] - 1)).lower()
+            old_itc = ('excluding itc reversal' not in t) and ('4b(1)' in t)
+    meta['old_itc'] = old_itc
+    layout = [(s_, sh, ([('GSTR-3B net', 'B', H4, '4B(1)'), ('GSTR-2B', 'F', H4, 'GSTR-2B')] if s_ == 'ITC other' and old_itc else bl))
+              for s_, sh, bl in LAYOUT]
+    for section, sheet, blocks in layout:
         if sheet not in wb.sheetnames:
             raise ValueError(f'sheet "{sheet}" is missing')
         g = _grid(wb[sheet]); loc = _locate(g)
@@ -171,6 +182,9 @@ def read_bo(path):
                         notes.append(f'{sheet}: the Total row for {side} {h} is {t:,.2f} but the months add to {s:,.2f}.')
     # the report's own difference columns must equal 3B minus the other side
     for sheet, c0, heads, a, b in SELF_CHECK:
+        if old_itc and sheet == 'ITC (Other than IMPG)':
+            if c0 == 'Z': continue                       # no after-reversal block in the old layout
+            a = ('ITC other', 'GSTR-3B net')             # its single block is already net of reversal
         g = _grid(wb[sheet]); hdr, data, _ = _locate(g)
         ci = column_index_from_string(c0) - 1
         for r in data:
@@ -194,6 +208,7 @@ def read_bo(path):
         for f in FIELDS: d[f] = rows[p].get(f)
         d['_period'], d['_fy'] = p, fy_of(p)
         d['_generated'] = meta['generated']
+        d['_old_itc'] = old_itc
         d['_blank_cols'] = [f for f in FIELDS if d[f] is None]
         d['_row'] = None
         out.append(d)
@@ -217,6 +232,9 @@ def add_bo(ing, path, rec, batch):
     gen = meta['generated']
     head = (f'BO report for FY {meta["fy"]}, generated {gen:%d-%m-%Y %H:%M}. ' if gen else
             f'BO report for FY {meta["fy"]} — NO GENERATION TIME FOUND in it. ')
+    if meta.get('old_itc'):
+        head += ('Older layout: its ITC sheet gives GSTR-3B credit only net of the Table 4B reversal (one block), so the '
+                 'before-reversal columns are blank. ')
     if ing.case_gstin and meta['gstin'] and meta['gstin'] != ing.case_gstin:
         rec.update(status='NOT USED - OTHER GSTIN',
                    note=head + f'WRONG TAXPAYER: the report is for GSTIN {meta["gstin"]}, not {ing.case_gstin}. '
@@ -291,7 +309,9 @@ def bo_month(d):
         f[('rcm2b', h)] = _g(d, 'RCM liability', 'GSTR-2B', h)
         f[('rcm_short', h)] = f[('rcm2b', h)] - f[('rcm3b', h)]
         f[('itc3b_net', h)] = _g(d, 'ITC other', 'GSTR-3B net', h)
-        f[('itc3b_gross', h)] = _g(d, 'ITC other', 'GSTR-3B gross', h)
+        # old layout: no before-reversal figure was reported, so 'gross' is taken as the net figure (reversal shown as nil)
+        f[('itc3b_gross', h)] = (_g(d, 'ITC other', 'GSTR-3B gross', h) if d.get(col('ITC other', 'GSTR-3B gross', h)) is not None
+                                 else f[('itc3b_net', h)])
         f[('itc2b', h)] = _g(d, 'ITC other', 'GSTR-2B', h)
         f[('itc_excess', h)] = f[('itc3b_net', h)] - f[('itc2b', h)]
         f[('impg3b', h)] = _g(d, 'ITC import', 'GSTR-3B', h) if h in H2 else 0.0
@@ -449,7 +469,7 @@ def chk_bo(ing, master, r1res=None, exres=None):
              'av_s': f[('itc2b', 'SGST')], 'av_i': f[('itc2b', 'IGST')] + f[('impg2b', 'IGST')],
              'short': f['short'], 'excess': f['excess'],
              'liab_m': sum(f[('out3b', h)] + f[('rcm3b', h)] for h in H4), 'itc_m': f['itc_net']}
-        ALT = {'itc': f['itc_gross'], 'itc_m': f['itc_gross'],
+        ALT = {} if d.get('_old_itc') else {'itc': f['itc_gross'], 'itc_m': f['itc_gross'],
                'itc_s': f[('itc3b_gross', 'SGST')] + f[('rcmitc', 'SGST')],
                'itc_i': f[('itc3b_gross', 'IGST')] + f[('impg3b', 'IGST')] + f[('rcmitc', 'IGST')]}
         CAND = {'out3b': [('export / SEZ tax of Table 3.1(b)', f['exp3b']), ('reverse-charge tax of Table 3.1(d)', f['rcm3b'])],
@@ -496,6 +516,10 @@ def chk_bo(ing, master, r1res=None, exres=None):
             elif status != 'MATCH':
                 ex_ = _explain(diff, CAND.get(mid, []))
                 reading = (ex_ + ' ' if ex_ else '') + READING[mid] + ' BO figure taken.'
+                if d.get('_old_itc') and mid in ('itc', 'itc_m', 'itc_s', 'itc_i', 'excess'):
+                    reading += (' This BO report (older layout) gives GSTR-3B credit only NET of the Table 4B reversal, '
+                                'reversals for reverse charge and imports included, so a figure before reversal cannot be '
+                                'compared.')
             elif mid == 'out3b' and 'out3b' in P:
                 bad = [h for h in H3 if abs(heads_p[h] - f[('out3b', h)]) > TOL]
                 if bad:
@@ -689,7 +713,7 @@ def build_compare(b):
         ws.cell(row=rr, column=5, value=_prime_formula(b, c['mid'], ref) if c['prime'] is not None else '')
         ws.cell(row=rr, column=6, value=c['prime_src'] if c['prime'] is not None else 'not held for this month')
         ws.cell(row=rr, column=7, value=_sum_formula(BO_TERMS[c['mid']], prow[p], cl))
-        ws.cell(row=rr, column=8, value=_sum_formula(ALT_TERMS[c['mid']], prow[p], cl) if c['mid'] in ALT_TERMS else '')
+        ws.cell(row=rr, column=8, value=_sum_formula(ALT_TERMS[c['mid']], prow[p], cl) if c['alt'] is not None else '')
         ws.cell(row=rr, column=9, value=c['bo_src'])
         ws.cell(row=rr, column=10, value=f'=IF(E{rr}="","",G{rr}-E{rr})')
         if c['status'] in ('BO NOT USED', 'DIFFERS (HEADS)'):
@@ -1194,6 +1218,10 @@ DERIV_ROWS = [
      'BO comparison report', 'The block headers and head labels are checked before any value is read, the months are checked '
      'against the report\'s own Total row, and the report\'s own difference columns are re-computed. A month with no DRC-03 is '
      'blank in the report and totalled there as nil, so it is held as 0.'],
+    ['SRC_BO_CMP', 'ITC other | GSTR-3B gross (blank)', 'Left blank for a BO report in the older layout (generated up to about '
+     '2022), whose ITC sheet has one GSTR-3B block already net of the Table 4B reversal', 'BO comparison report',
+     'That block is read as the after-reversal figure, which is the one every computation uses; a before-reversal figure '
+     'was not reported and is not invented.'],
     ['SRC_BO_CMP', 'Which BO report is used for a month', 'The one GENERATED LAST (time printed on the report), whatever the upload order',
      'Report header', 'A later download reflects GSTR-1 amendments and late returns filed in between.'],
     ['19E_BO_vs_NOTEBOOK', 'Status', 'MATCH within Rs.5; MATCH (before reversal) where Prime agrees with BO before Table 4B; '
