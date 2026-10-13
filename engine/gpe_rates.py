@@ -16,13 +16,13 @@ import os, re, datetime, hashlib, calendar
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
-RATES_VERSION = "1.2"
+RATES_VERSION = "1.3"
 
 COLUMNS = ['Row ID', 'HSN', 'Level', 'Description of goods (verbatim)', 'IGST rate %', 'CGST rate %',
            'SGST/UTGST rate %', 'Compensation cess', 'Valid from', 'Valid to', 'Notification', 'Schedule',
            'S.No.', 'Excluding HSN', 'Scope', 'Source file', 'Source page', 'Source MD5', 'Status', 'Remarks']
 REQUIRED = ['HSN', 'Description of goods (verbatim)', 'IGST rate %', 'Valid from', 'Notification']
-STATUSES = ('OFFICIAL FILE', 'COMPILATION', 'TO VERIFY')
+STATUSES = ('OFFICIAL FILE', 'AS ISSUED', 'COMPILATION', 'TO VERIFY')
 SLABS = (0, 0.1, 0.25, 1, 1.5, 3, 5, 6, 7.5, 12, 18, 28, 40)   # IGST-equivalent rates that exist in the law
 TOL = 0.10                                                      # percentage points: rounding, not a rate difference
 
@@ -161,6 +161,8 @@ README = [
     'the First Schedule to the Customs Tariff Act, 1975, read with its rules for interpretation and notes).',
     '',
     'Status: OFFICIAL FILE = taken from the Gazette / CBIC copy of the notification named; file name and MD5 recorded.',
+    '        AS ISSUED     = taken from the official copy of the notification AS ISSUED, without its later amendments:',
+    '                        the rate is the one notified on that date and may have been changed by a later amendment.',
     '        COMPILATION   = taken from a published compilation of the notification (for example the ICAI print).',
     '        TO VERIFY     = entered by hand without a source file.',
     '        Only OFFICIAL FILE entries are counted in the findings; the others are shown as indicative. To upgrade,',
@@ -228,6 +230,13 @@ def lookup(rows, hsn, period):
         return any(h.startswith(x) for x in str(r.get('Excluding HSN') or '').replace(' ', '').split(',') if x)
     anych = [r for r in live if r['HSN'] == 'ANY']
     live = [r for r in live if r['HSN'] != 'ANY' and not _excl(r)]
+    # a heading number beyond the last heading the rate notifications list for that Chapter is most likely not a
+    # heading of the Customs Tariff at all (9090, 9099: Chapter 90 ends at 9033) — reported, not matched to the residual
+    heads = [r['HSN'][:4] for r in rows if r['HSN'] not in ('*', 'ANY') and len(r['HSN']) >= 4 and r['HSN'][:2] == h[:2]]
+    if len(h) >= 4 and h[:2] != '99' and heads and h[:4] > max(heads):
+        return dict(status='HSN CODE NOT RECOGNISED', rows=[], rates=[], finer=[], basis='none', any_chapter=anych,
+                    concessions=[], covered_from=None, all_official=False,
+                    note=f'heading {h[:4]} is beyond the last heading listed for Chapter {h[:2]} ({max(heads)})')
     pre = [r for r in live if r['HSN'] != '*' and h.startswith(r['HSN'])]
     finer = [r for r in live if r['HSN'] != '*' and r['HSN'].startswith(h) and len(r['HSN']) > len(h)]
     basis = 'longest prefix'
@@ -237,13 +246,6 @@ def lookup(rows, hsn, period):
     elif finer:
         chosen, basis = [], 'finer entries only'
     else:
-        # a heading number beyond the last heading the rate notifications list for that Chapter is most likely not a
-        # heading of the Customs Tariff at all (9090, 9099: Chapter 90 ends at 9033) — reported, not matched to the residual
-        heads = [r['HSN'][:4] for r in rows if r['HSN'] not in ('*', 'ANY') and len(r['HSN']) >= 4 and r['HSN'][:2] == h[:2]]
-        if len(h) >= 4 and h[:2] != '99' and heads and h[:4] > max(heads):
-            return dict(status='HSN CODE NOT RECOGNISED', rows=[], rates=[], finer=[], basis='none', any_chapter=anych,
-                        concessions=[], covered_from=None, all_official=False,
-                        note=f'heading {h[:4]} is beyond the last heading listed for Chapter {h[:2]} ({max(heads)})')
         chosen = [r for r in live if r['HSN'] == '*']
         basis = 'residual entry' if chosen else 'none'
     narrow = bool(chosen) and basis == 'longest prefix' and all(r.get('Scope') == 'PART OF CODE' for r in chosen)
@@ -318,6 +320,11 @@ def judge(rows, hsn, period, value, tax):
         out['result'] = 'ABOVE THE NOTIFIED RATE (tax over-charged; no revenue loss)'
     else:
         out['result'] = 'BETWEEN THE POSSIBLE RATES — mixed supplies or wrong rate on part; check invoices'
+    asis = [r for r in lk['rows'] if r.get('Status') == 'AS ISSUED' and r['Valid from'] and
+            month_bounds(period)[0] > r['Valid from']]
+    if asis:
+        out['result'] += (' [rate as issued on ' + f'{min(r["Valid from"] for r in asis):%d-%m-%Y}' +
+                          '; later amendments not applied — confirm the rate in force in this month]')
     if lk['status'] == 'MASTER COVERS ONLY PART OF THE MONTH':
         # compared, but the days of the month before the first entry in force have no entry in the master
         out['result'] += f' — the master covers this month only from {lk["covered_from"]:%d-%m-%Y}'
@@ -345,6 +352,9 @@ def parse_hsn_cell(text):
     -> (codes, excluded codes). Ranges are expanded heading by heading."""
     t = ' '.join(text.split())
     t = re.sub(r'\bor(?=\d)', 'or ', t)
+    t = re.sub(r'\bA\s+ny\b', 'Any', t)                     # 'A ny chapter' (spacing in the PDF)
+    if t.strip() in ('-', '—', '–'): return ['ANY'], []      # no code: the entry is by description alone
+    t = t.replace('/', ',')
     t = re.sub(r'\[\s*Except\b', '(Except', t, flags=re.I)
     t = re.sub(r'\(\s*other\s+than\b', '[other than', t, flags=re.I)
     t = re.sub(r'(\[\s*other\s+than[^\])]*)[)\]]?\s*$', r'\1]', t, flags=re.I)   # unclosed bracket at the end
@@ -388,6 +398,14 @@ def parse_notification_pdf(path):
     if m:
         meta['notification'] = f'{m.group(1)}-{m.group(2).title()} Tax (Rate)'; meta['dated'] = m.group(3)
         meta['tax'] = m.group(2).upper()
+    else:   # the notification as issued: "Notification No.1/2017-Integrated Tax (Rate) ... New Delhi, the 28th June, 2017"
+        m = re.search(r'Notification\s+No\.?\s*(\d+/\d{4})\s*-\s*(Integrated|Central|State|Union Territory)\s+Tax\s*\(Rate\)', full, re.I)
+        if m:
+            meta['notification'] = f'{m.group(1)}-{m.group(2).title()} Tax (Rate)'; meta['tax'] = m.group(2).upper()
+        d = re.search(r'New Delhi,?\s*the\s*(\d+)\w*\s+(\w+),?\s*(\d{4})', full)
+        if d and d.group(2).lower() in _MONTHS:
+            meta['dated'] = f'{int(d.group(1)):02d}-{_MONTHS[d.group(2).lower()]:02d}-{d.group(3)}'
+    meta['exemption'] = bool(re.search(r'hereby\s+exempts', full.replace('\n', ' '), re.I))
     if re.search(r'corrigendum', full, re.I):
         c = re.search(r'corrected by corrigendum,?\s*dated\s*([\d\-./]+)', full, re.I)
         meta['corrigendum'] = c.group(1) if c else 'yes'
@@ -416,6 +434,7 @@ def parse_notification_pdf(path):
             t0 = ' '.join(w['text'] for w in L)
             m0 = re.match(r'^Schedule\s+([IVX]+)\s*[–\-—]\s*[\d.]+\s*%', t0)
             if m0: sch_ = m0.group(1); continue
+            if t0 == 'Schedule': sch_ = 'Exemption'; continue
             if re.fullmatch(r'\d+\.', L[0]['text']) and L[0]['x0'] < 110 and len(L) > 2:
                 inb = False
                 for w in L[1:]:
@@ -435,6 +454,10 @@ def parse_notification_pdf(path):
                 in_list = True; cur = None; continue
             if in_list and not re.match(r'^Schedule\s+[IVX]+\s*[–\-—]', text): continue
             if 'Corrected vide' in text or (has_fn and re.fullmatch(r'\d{1,2}', text)): continue
+            if text == str(pno): continue                    # page number
+            if meta['exemption'] and re.fullmatch(r'Schedule', text):
+                sched = 'Exemption'; rates.setdefault('Exemption', 0.0); in_list = False; cur = None
+                page_dx = page_dxs.get(None, page_dx); continue
             sh = re.match(r'^Schedule\s+([IVX]+)\s*[–\-—]\s*([\d.]+)\s*%', text)
             if sh:
                 sched = sh.group(1); in_list = False
@@ -444,12 +467,15 @@ def parse_notification_pdf(path):
                 rates.setdefault(sched, float(sh.group(2)))
                 cur = None; continue
             if sched is None: continue
-            if re.match(r'^Explanation\.?\s*[—\-–]\s*For the purposes of this notification', text) or \
+            if re.match(r'^Explanation\s*\.?\s*[—\-–]\s*For the purposes of this (notification|Schedule)', text) or \
                re.match(r'^\d\.\s*This notification shall come into force', text):
                 done = True; break
+            toks = text.split()
+            HDR = {'S.', 'S', 'No.', 'No', 'Chapter', 'Chapter/', '/', 'Heading', 'heading', 'Heading/', 'Sub-heading', 'Sub-',
+                   'Sub', 'heading/', 'Subheading', 'Tariff', 'item', '-', 'Description', 'of', 'Goods', 'goods', '/Tariff'}
             if re.fullmatch(r'\(1\)\s*\(2\)\s*\(3\)', text) or re.match(r'^S\.?\s*(No\.)?\s*Chapter', text) or \
-               re.fullmatch(r'(No\.|S\.|item|Tariff|/|Sub-?heading|heading|Heading|Subheading|Chapter|-|\s)+', text) or \
-               text in ('No.', 'item'):
+               (len(toks) >= 2 and all(t in HDR for t in toks)) or \
+               text in ('No.', 'item', 'S.', 'Tariff item', 'Sub-heading', 'Heading', 'Subheading', '/ Tariff item'):
                 continue
             first = L[0]
             if re.fullmatch(r'\d+\.', first['text']) and first['x0'] < 110:
@@ -507,7 +533,7 @@ def rows_from_notification(meta, parsed, status, valid_from=None, valid_to=None,
                      'Notification': f'{meta.get("notification")} dated {meta.get("dated")}',
                      'Schedule': e['schedule'], 'S.No.': e['sno'], 'Source file': meta['file'], 'Source page': e['page'],
                      'Source MD5': meta['md5'], 'Status': status, 'Excluding HSN': ', '.join(e['excluded']) or None,
-                     'Scope': ('PART OF CODE' if (e['hsn'] == 'ANY' or (len(e['hsn']) == 2 and
+                     'Scope': ('PART OF CODE' if (meta.get('exemption') or e['hsn'] == 'ANY' or (len(e['hsn']) == 2 and
                                not e['desc'].lower().startswith('all'))) else None),
                      'Remarks': (note + (f'Code column reads "{e["hsn_text"]}".' if e['hsn_text'] and
                                          re.sub(r'\D', '', e['hsn_text']) != e['hsn'] else '')).strip() or None})
@@ -541,3 +567,137 @@ def merge_notification(old_rows, meta, parsed, status):
            'Effective from': eff, 'Where downloaded': meta.get('compilation') or 'official copy',
            'Loaded on': datetime.date.today(), 'Rows': len(new)}
     return keep + new, dict(replaced=replaced, closed=closed, added=len(new), source=src)
+
+# ------------------------------------------------------------------ reading a services rate notification PDF
+_ROMANS = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x', 'xi', 'xii', 'xiii', 'xiv', 'xv', 'xvi', 'xvii',
+           'xviii', 'xix', 'xx', 'xxi', 'xxii', 'xxiii', 'xxiv', 'xxv']
+_ROMAN_ITEM = re.compile(r'^\((i{1,3}|iv|v|vi{0,3}|ix|x|xi{0,3}|xiv|xv|xvi{0,3}|xix|xx|xxi{0,3}|xxiv|xxv)\)$')
+
+def parse_services_pdf(path):
+    """Read the Table of a services rate notification laid out as 8/2017- / 11/2017-Tax (Rate):
+    Sl No. | Chapter, Section or Heading | Description of Service | Rate (per cent.) | Condition.
+    Each numbered item (i), (ii) ... of a heading is one entry; the rate printed against it (centred in its
+    cell, so it is matched by vertical position) is its rate. Returns (meta, entries, problems)."""
+    import pdfplumber
+    pdf = pdfplumber.open(path)
+    first = '\n'.join((p.extract_text() or '') for p in pdf.pages[:2])
+    meta = dict(file=os.path.basename(path), md5=md5_file(path), pages=len(pdf.pages), kind='services')
+    m = re.search(r'Notification\s+No\.?\s*(\d+/\d{4})\s*-\s*(Integrated|Central|State|Union Territory)\s+Tax\s*\(Rate\)', first, re.I)
+    if m:
+        meta['notification'] = f'{m.group(1)}-{m.group(2).title()} Tax (Rate)'
+    d = re.search(r'New Delhi,?\s*the\s*(\d+)\w*\s+(\w+),?\s*(\d{4})', first)
+    if d and d.group(2).lower() in _MONTHS:
+        meta['dated'] = f'{int(d.group(1)):02d}-{_MONTHS[d.group(2).lower()]:02d}-{d.group(3)}'
+    meta['compilation'] = 'idtc.icai.org' if 'idtc.icai.org' in first else None
+    tail = ' '.join((p.extract_text() or '') for p in pdf.pages[-2:])
+    e = re.search(r'come into force with effect from (?:the )?(\d+)\w*\s+day of (\w+),?\s*(\d{4})', tail, re.I)
+    if e and e.group(2).lower() in _MONTHS:
+        meta['effective_from'] = datetime.date(int(e.group(3)), _MONTHS[e.group(2).lower()], int(e.group(1)))
+    # column positions from the header row ("Description of Service", "Rate", "(per", "Condition")
+    hdr = {}
+    for w in pdf.pages[0].extract_words(x_tolerance=1.5, y_tolerance=3):
+        if w['text'] in ('Description', 'Condition', 'Rate', '(per') and w['text'] not in hdr:
+            hdr[w['text']] = w['x0']
+    words = []
+    for pno, page in enumerate(pdf.pages, 1):
+        for w in page.extract_words(x_tolerance=1.5, y_tolerance=3):
+            words.append(dict(w, y=pno * 2000 + w['top'], page=pno))
+    # the description column starts where the item markers (i), (ii) ... sit
+    marks = [round(w['x0']) for w in words if _ROMAN_ITEM.match(w['text'])]
+    xm = max(set(marks), key=marks.count) if marks else 182
+    xd = xm - 3
+    xr0 = min(hdr.get('Rate', 430), hdr.get('(per', 416)) - 4      # rate column
+    xc0 = hdr.get('Condition', 500) - 22                             # condition column
+    lines = {}
+    for w in words:
+        lines.setdefault((w['page'], round(w['top'] / 4)), []).append(w)
+    entries, blk, item, started, problems, pending = [], None, None, False, [], None
+    rates, rate_words = [], []
+    for k in sorted(lines):
+        L = sorted(lines[k], key=lambda w: w['x0'])
+        text = ' '.join(w['text'] for w in L)
+        if not started:
+            if re.match(r'^\(1\)\s*\(2\)\s*\(3\)\s*\(4\)', text): started = True
+            continue
+        if re.fullmatch(r'\d+\.', L[0]['text']) and L[0]['x0'] < 75:
+            break                                      # paragraph 2 of the notification: the Table has ended
+        if len(L) == 1 and re.fullmatch(r'\d{1,3}', L[0]['text']) and xd + 40 < L[0]['x0'] < xr0:
+            continue                                   # page number
+        # a new row of the Table starts where the heading column names a Chapter, Section or Heading
+        # The serial number and the heading are centred in their cells, so either can come first.
+        hs = [w for w in L if 90 <= w['x0'] < xd and w['text'] in ('Heading', 'Section', 'Chapter')]
+        sl_tok = [w for w in L if w['x0'] < 90 and re.fullmatch(r'\d{1,3}', w['text'])]
+        n = int(sl_tok[0]['text']) if sl_tok else None
+        if n is not None and blk is not None and blk['sl'] is None and blk['has_head']:
+            blk['sl'] = n                                   # heading came first, serial number below it
+        elif n is not None and (blk is None or blk['sl'] != n):
+            blk = dict(sl=n, head=[], items=[], has_head=bool(hs), y=sl_tok[0]['y'], page=sl_tok[0]['page'])
+            entries.append(blk); item = None
+        if hs:
+            if blk is not None and not blk['has_head'] and blk['sl'] is not None:
+                blk['has_head'] = True                      # serial number came first, heading below it
+            elif blk is None or blk['has_head'] and not (n is not None and blk['sl'] == n and blk['y'] == sl_tok[0]['y']):
+                blk = dict(sl=None, head=[], items=[], has_head=True, y=hs[0]['y'], page=hs[0]['page'])
+                entries.append(blk); item = None
+        if blk is None: continue
+        for w in L:
+            x, t = w['x0'], w['text']
+            if w in sl_tok: continue
+            if x < xd:
+                blk['head'].append(t)
+            elif x < xr0:
+                nxt = _ROMANS[len([i for i in blk['items'] if i['no']])] if len([i for i in blk['items'] if i['no']]) < len(_ROMANS) else None
+                if _ROMAN_ITEM.match(t) and abs(x - xm) < 2.5 and w is [z for z in L if z['x0'] >= xd][0] and t == f'({nxt})':
+                    item = dict(no=t, desc=[], cond=[], y=w['y'], page=w['page']); blk['items'].append(item)
+                else:
+                    if item is None:
+                        item = dict(no='', desc=[], cond=[], y=w['y'], page=w['page']); blk['items'].append(item)
+                    item['desc'].append(t)
+            elif x < xc0:
+                if re.fullmatch(r'\d+(\.\d+)?', t): rates.append((w['y'], float(t), blk))
+                elif t.lower() == 'nil': rates.append((w['y'], 0.0, blk))
+                else: rate_words.append((w['y'], t, blk))
+            else:
+                if item is None:
+                    item = dict(no='', desc=[], cond=[], y=w['y'], page=w['page']); blk['items'].append(item)
+                item['cond'].append(t)
+    # a rate belongs to the item whose vertical span holds it
+    allitems = [(it['y'], it, s) for s in entries for it in s['items']]
+    allitems.sort(key=lambda z: z[0])
+    for y, r, s_ in rates:
+        cand = [z for z in allitems if z[2] is s_ and z[0] <= y + 2]
+        tgt = cand[-1][1] if cand else (s_['items'][0] if s_['items'] else None)
+        if tgt is None:
+            problems.append(f'Sl {s_["sl"]}: rate {r:g} with no description'); continue
+        tgt.setdefault('rates', []).append(r)
+    for y, t, s_ in rate_words:
+        cand = [z for z in allitems if z[2] is s_ and z[0] <= y + 2]
+        if cand: cand[-1][1].setdefault('rate_words', []).append(t)
+    out = []
+    for s in entries:
+        head = ' '.join(s['head'])
+        codes = re.findall(r'(?:Heading|Group|Service Code \(Tariff\))\s*(\d{4,6})', head) or \
+                (['99'] if re.search(r'Chapter\s*99', head) else [])
+        for it in s['items']:
+            rs = sorted(set(it.get('rates', [])))
+            if not rs:
+                if it.get('rate_words'):
+                    problems.append(f'Sl {s["sl"]}{it["no"]}: rate given in words, not entered: "{" ".join(it["rate_words"])[:80]}"')
+                continue
+            odd = [r for r in rs if r not in (0, 0.1, 0.25, 1, 1.5, 3, 5, 6, 7.5, 12, 18, 28, 40)]
+            if odd:
+                problems.append(f'Sl {s["sl"]}{it["no"]}: rate {odd} printed is not a GST rate — entered as printed, check it')
+            if not codes:
+                problems.append(f'Sl {s["sl"]} {it["no"]}: rate {rs} but no heading read from {head!r}'); continue
+            for c in codes:
+                for r in rs:
+                    out.append(dict(schedule='Table', sno=f'{s["sl"]}{it["no"]}', hsn=c, excluded=[],
+                                    desc=(it['no'] + ' ' + ' '.join(it['desc'])).strip(), page=it['page'],
+                                    hsn_text=head, rate=r, condition=' '.join(it['cond']).strip() or None,
+                                    multi=len(rs) > 1))
+    sls = [s['sl'] for s in entries if s['sl']]
+    miss = sorted(set(range(1, max(sls) + 1)) - set(sls)) if sls else []
+    if miss: problems.append(f'Sl No. not found: {miss}')
+    meta['entries'] = {'Table': len(entries)}
+    meta['schedule_rates'] = {}
+    return meta, out, problems
