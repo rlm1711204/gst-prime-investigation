@@ -16,7 +16,7 @@ import os, re, datetime, hashlib, calendar
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
-RATES_VERSION = "1.3"
+RATES_VERSION = "1.4"
 
 COLUMNS = ['Row ID', 'HSN', 'Level', 'Description of goods (verbatim)', 'IGST rate %', 'CGST rate %',
            'SGST/UTGST rate %', 'Compensation cess', 'Valid from', 'Valid to', 'Notification', 'Schedule',
@@ -536,7 +536,11 @@ def rows_from_notification(meta, parsed, status, valid_from=None, valid_to=None,
                      'Scope': ('PART OF CODE' if (meta.get('exemption') or e['hsn'] == 'ANY' or (len(e['hsn']) == 2 and
                                not e['desc'].lower().startswith('all'))) else None),
                      'Remarks': (note + (f'Code column reads "{e["hsn_text"]}".' if e['hsn_text'] and
-                                         re.sub(r'\D', '', e['hsn_text']) != e['hsn'] else '')).strip() or None})
+                                         re.sub(r'\D', '', e['hsn_text']) != e['hsn'] and meta.get('kind') != 'services' else '')
+                                 + (f' Condition: {e["condition"][:300]}' if e.get('condition') else '')
+                                 + (' More than one rate printed against this item.' if e.get('multi') else '')
+                                 + (' Rate printed in the notification is not a GST rate — check.'
+                                    if ig is not None and ig not in SLABS else '')).strip() or None})
     return rows
 
 def merge_notification(old_rows, meta, parsed, status):
@@ -551,7 +555,8 @@ def merge_notification(old_rows, meta, parsed, status):
     def same(r, n):
         t = str(r.get('Notification') or '')
         return bool(re.search(rf'(^|\D)0*{re.escape(n)}\b', t)) and kind in t
-    keep = [dict(r) for r in old_rows if not (num and same(r, num.group(1)))]
+    # replace only entries READ FROM A FILE of this notification; hand-entered rows (amendments, TO VERIFY) stay
+    keep = [dict(r) for r in old_rows if not (num and same(r, num.group(1)) and r.get('Source MD5'))]
     replaced = len(old_rows) - len(keep)
     closed = 0
     eff = meta.get('effective_from')
@@ -701,3 +706,18 @@ def parse_services_pdf(path):
     meta['entries'] = {'Table': len(entries)}
     meta['schedule_rates'] = {}
     return meta, out, problems
+
+
+def read_rate_pdf(path):
+    """Read any rate notification PDF: a goods rate or exemption notification (Schedules) or a services rate
+    notification (Table with a rate column). Returns (meta, entries, problems)."""
+    import pdfplumber
+    with pdfplumber.open(path) as pdf:
+        head = ' '.join((p.extract_text() or '') for p in pdf.pages[:2])
+    if re.search(r'supply\s+of\s+services', head, re.I) and re.search(r'Description\s+of\s+Service', head, re.I):
+        return parse_services_pdf(path)
+    return parse_notification_pdf(path)
+
+def blocking(problems):
+    """Problems that mean the notification was not read completely (as against items flagged for a look)."""
+    return [p for p in problems if re.search(r'not found|not understood|read twice|no heading|no description', p)]
