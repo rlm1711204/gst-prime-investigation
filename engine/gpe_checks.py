@@ -8,7 +8,7 @@ import datetime, re
 from gpe_core import (REPORT_SPECS, parse_period, period_key, fy_of, fy_long,
                       n0, to_date, inr)
 
-CHECKS_VERSION = "1.5"
+CHECKS_VERSION = "1.6"
 FY_ORDER = ['2021-22','2022-23','2023-24','2024-25','2025-26','2026-27',
             '2027-28','2028-29','2029-30']
 
@@ -251,7 +251,7 @@ def chk_credit_notes(ing, master):
 # -------------------------------------------------------- 8. return filing
 def chk_return_filing(ing, master, r1res):
     if not ing.have('R3B_FILING') and not ing.have('R3B_MONTHLY'):
-        return dict(available=False, missing=['R3B_FILING or R3B_MONTHLY'])
+        return dict(available=False, missing=['R3B_FILING', 'R3B_MONTHLY'], any_of=True)
     if not master:
         return dict(available=False, missing=['TAX_PAID'])
     fl = ing.by_period('R3B_FILING')

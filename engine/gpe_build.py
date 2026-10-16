@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 from gpe_core import REPORT_SPECS, period_key, fy_of, n0, inr
 from gpe_checks import due_date
 
-BUILD_VERSION = "1.10"
+BUILD_VERSION = "1.11"
 BOLD = Font(bold=True)
 THIN = Side(style='thin')
 BD = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -78,8 +78,9 @@ class Builder:
     def unavailable(self, ws, res, what):
         ws['A1'] = what; ws['A1'].font = BOLD
         r = self.note(ws, 3, 'THIS TEST COULD NOT BE RUN.', bold=True)
-        r = self.note(ws, r, 'The following GST-Prime report(s) have not been supplied: '
-                             + ', '.join(REPORT_SPECS[m]['title'] + f'  [{m}]'
+        r = self.note(ws, r, ('None of the following GST-Prime reports has been supplied (any ONE of them is enough): '
+                              if res.get('any_of') else 'The following GST-Prime report(s) have not been supplied: ')
+                             + ', '.join((REPORT_SPECS[m]['title'] if m in REPORT_SPECS else m) + f'  [{m}]'
                                          for m in res.get('missing', [])))
         r = self.note(ws, r, 'Upload the report and run the notebook again. Nothing has been '
                              'estimated or assumed in its place.')
