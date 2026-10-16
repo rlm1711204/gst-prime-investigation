@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 from gpe_core import REPORT_SPECS, period_key, fy_of, n0, inr
 from gpe_checks import due_date
 
-BUILD_VERSION = "1.11"
+BUILD_VERSION = "1.12"
 BOLD = Font(bold=True)
 THIN = Side(style='thin')
 BD = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -165,8 +165,8 @@ class Builder:
                          'remove the later file from 01_RAW_UPLOADS and run again.')
 
     # ------------------------------------------------------ source sheets
-    def build_sources(self):
-        order = [c for c in REPORT_SPECS if self.ing.have(c)]
+    def build_sources(self, only=None):
+        order = [c for c in REPORT_SPECS if self.ing.have(c) and (only is None or c in only)]
         for code in order:
             sp = REPORT_SPECS[code]
             rows = self.ing.data[code]
@@ -671,8 +671,8 @@ class Builder:
         res = self.R['cash']; ws = self.sheet('19_CASH_RECON')
         if not res.get('available'): return self.unavailable(ws, res, 'CASH ACTUALLY PAID TO THE EXCHEQUER')
         ws['A1'] = 'CASH ACTUALLY PAID TO THE EXCHEQUER — every challan since registration'; ws['A1'].font = BOLD
-        self.head(ws, 3, ['Payment month','Payment date','CIN','SGST','CGST','IGST','TOTAL','Running total'],
-                  [15,14,26,15,15,15,16,16])
+        self.head(ws, 3, ['Payment month','Payment date','CIN','SGST','CGST','IGST','TOTAL','Running total','FY of challan'],
+                  [15,14,26,15,15,15,16,16,13])
         last = self.src_rows.get('PAYMENTS')
         s = _q('SRC_PAYMENTS')
         for i, p in enumerate(res['challans'], 4):
@@ -682,14 +682,17 @@ class Builder:
             for col, k in zip([4,5,6,7], ['SGST','CGST','IGST','TOTAL']):
                 ws.cell(row=i, column=col, value=n0(p.get(k)))
             ws.cell(row=i, column=8, value=f'=SUM($G$4:$G{i})')
+            ws.cell(row=i, column=9, value=(f'=IF(B{i}="","",IF(MONTH(B{i})>3,YEAR(B{i})&"-"&RIGHT(YEAR(B{i})+1,2),'
+                                            f'(YEAR(B{i})-1)&"-"&RIGHT(YEAR(B{i}),2)))'))
         r = 3 + len(res['challans']) + 1
+        self.challan_rows = (4, r - 1)
         ws.cell(row=r, column=3, value='TOTAL CASH EVER PAID').font = BOLD
         for c in range(4, 8):
             LL = get_column_letter(c); ws.cell(row=r, column=c, value=f'=SUM({LL}4:{LL}{r-1})').font = BOLD
-        self.box(ws, 4, r, 1, 8, numfrom=4)
+        self.box(ws, 4, r, 1, 9, numfrom=4)
         for i in range(4, r+1):
             ws.cell(row=i, column=2).number_format = 'DD-MM-YYYY'
-            for c in (1, 3): ws.cell(row=i, column=c).number_format = 'General'
+            for c in (1, 3, 9): ws.cell(row=i, column=c).number_format = 'General'
         self.cash_cell = f"'19_CASH_RECON'!G{r}"
         s0 = r + 2
         ws.cell(row=s0, column=1, value='CASH AGAINST DECLARED LIABILITY').font = BOLD
@@ -710,7 +713,8 @@ class Builder:
         ws.cell(row=t, column=1, value='CASH BY FINANCIAL YEAR OF THE CHALLAN').font = BOLD
         self.head(ws, t+1, ['FY of challan','Cash paid'], [22, 18])
         for i, (f, v) in enumerate(sorted(res['by_fy'].items()), t+2):
-            ws.cell(row=i, column=1, value=f); ws.cell(row=i, column=2, value=v).number_format = NUM
+            ws.cell(row=i, column=1, value=f)
+            ws.cell(row=i, column=2, value=f'=SUMIF($I$4:$I${r-1},A{i},$G$4:$G${r-1})').number_format = NUM
         self.box(ws, t+2, t+1+len(res['by_fy']), 1, 2, numfrom=2)
         self.note(ws, t+3+len(res['by_fy']), 'Payment Month is the month of the challan, which discharges the preceding tax '
                   'period. A run of very small challans is ordinarily late fee, not tax — check against the delays in sheet 18.',
@@ -2291,6 +2295,154 @@ ORDER_HINT = ['00_INDEX'] + [f'SRC_{c}'[:31] for c in REPORT_SPECS] + ['SRC_RATE
               '19_CASH_RECON','19A_ITC_vs_2A','19B_CREDIT_NOTES','19C_TDS_GSTR7','19D_TDS_PARTIES',
               '19E_BO_vs_NOTEBOOK','19F_BO_FINAL_POSITION','19G_CHANGE_REPORT','20_FINDINGS','21_REPORT','22_ACTION_POINTS',
               '23_DATA_GAPS','24_LIMITATION']
+
+CC_SOURCES = ('TAX_PAID', 'PAYMENTS')
+CREDIT_LINE = 'Created by Ram Lakhan Meena, INSPECTOR CBIC'
+
+def _cc_summary(b, run_dt):
+    """One sheet that answers the quick question, every figure a formula over 11, 15 and 19."""
+    from openpyxl.styles import Alignment
+    ws = b.sheet('00_CASH_CREDIT')
+    ws['A1'] = f'CASH AND CREDIT — QUICK CHECK — {b.name}'; ws['A1'].font = BOLD
+    ws['A2'] = f'GSTIN {b.gstin}'
+    ws['G1'] = CREDIT_LINE; ws['G1'].font = Font(italic=True); ws['G1'].alignment = Alignment(horizontal='right')
+    ws['G2'] = run_dt.strftime('%d-%m-%Y'); ws['G2'].alignment = Alignment(horizontal='right')
+    ws['A3'] = ('Built only from TAX PAID DETAILS (output tax, ITC, SGST cash) and PAYMENT DETAILS (challans). '
+                'How much of the output tax was met in cash, and how much from credit.')
+    ws['A3'].alignment = Alignment(wrap_text=True, vertical='top')
+    H = ['FY', 'Tax periods', 'Output tax declared (incl. RCM)', 'ITC availed', 'ITC as % of output tax',
+         'Cash paid — challans dated in the FY', 'Cash as % of output tax', 'Months below 1% cash (Rule 86B, prima facie)']
+    b.head(ws, 5, H, [11, 11, 22, 18, 14, 22, 14, 22])
+    ws.row_dimensions[5].height = 45
+    fys = sorted(b.R['fy'], key=lambda x: int(x.split('-')[0]))
+    F = _q('11_FY_SUMMARY'); C = _q('19_CASH_RECON'); B86 = _q('15_RULE_86B')
+    have_cash = b.R['cash'].get('available') and getattr(b, 'challan_rows', None)
+    m0, m1 = 4, 3 + len(b.R['master'])
+    for i, f in enumerate(fys, 6):
+        k = 4 + fys.index(f)                                  # row of this FY on 11_FY_SUMMARY
+        ws.cell(row=i, column=1, value=f)
+        ws.cell(row=i, column=2, value=f'={F}!B{k}')
+        ws.cell(row=i, column=3, value=f'={F}!E{k}')
+        ws.cell(row=i, column=4, value=f'={F}!F{k}')
+        ws.cell(row=i, column=5, value=f'=IFERROR(D{i}/C{i},"")')
+        if have_cash:
+            c0, c1 = b.challan_rows
+            ws.cell(row=i, column=6, value=f'=SUMIF({C}!$I${c0}:$I${c1},A{i},{C}!$G${c0}:$G${c1})')
+        else:
+            b.na(ws, i, 6, 'PAYMENT DETAILS NOT UPLOADED')
+        ws.cell(row=i, column=7, value=f'=IFERROR(F{i}/C{i},"")' if have_cash else '')
+        if b.R['rule86b'].get('available'):
+            ws.cell(row=i, column=8, value=(f'=COUNTIFS({_q("10_MONTHLY_MASTER")}!$B${m0}:$B${m1},A{i},'
+                                            f'{B86}!$H${m0}:$H${m1},"BELOW*")'))
+    r = 6 + len(fys)
+    ws.cell(row=r, column=1, value='TOTAL').font = BOLD
+    for c in (2, 3, 4, 6, 8):
+        if c == 6 and not have_cash: continue
+        L = get_column_letter(c); ws.cell(row=r, column=c, value=f'=SUM({L}6:{L}{r-1})').font = BOLD
+    ws.cell(row=r, column=5, value=f'=IFERROR(D{r}/C{r},"")').font = BOLD
+    if have_cash: ws.cell(row=r, column=7, value=f'=IFERROR(F{r}/C{r},"")').font = BOLD
+    b.box(ws, 6, r, 1, 8, numfrom=2)
+    for i in range(6, r + 1):
+        for c in (5, 7): ws.cell(row=i, column=c).number_format = '0.0%'
+        ws.cell(row=i, column=1).number_format = 'General'
+    b.cc_total_row = r
+    n = r + 2
+    n = b.note(ws, n, 'HOW TO READ IT', bold=True)
+    for t in ('ITC above 100% of output tax means more credit was taken than tax was declared — the excess sits in the credit '
+              'ledger or was used elsewhere. A cash share close to nil means the liability was met almost wholly from credit.',
+              'Cash is the challans dated in the FY (a challan in April usually pays March\'s return), so a single year can '
+              'be off by one month\'s payment. The total row is not affected.',
+              'Challans are cash put INTO the cash ledger, not necessarily used for tax — part may sit as a balance or pay '
+              'interest / late fee. TDS and TCS credits also reach the cash ledger without a challan. Confirm on the ledger.',
+              'Rule 86B months are prima facie: TAX PAID DETAILS gives SGST cash only (CGST taken equal, IGST not captured), '
+              'and the exceptions in the proviso are not tested. See 15_RULE_86B.',
+              'Detail: 11_FY_SUMMARY (year by year), 15_RULE_86B (month by month), 19_CASH_RECON (every challan). Every '
+              'figure traces to SRC_TAX_PAID and SRC_PAYMENTS. For the full analysis run Step 8 with "Full investigation".'):
+        n = b.note(ws, n, t)
+    ws.column_dimensions['A'].width = 14
+
+def build_cash_credit_workbook(ing, R, gstin, name, out_path, mark_missing_light_red=True, profile=None):
+    """Quick check: cash and credit only. Source sheets for the two reports, the master they feed, and
+    11_FY_SUMMARY, 15_RULE_86B and 19_CASH_RECON, with a one-page summary in front."""
+    from openpyxl.styles import Alignment
+    b = Builder(ing, R, gstin, name, mark_missing_light_red, profile)
+    run_dt = datetime.datetime.now()
+    b.build_sources(only=CC_SOURCES)
+    b.build_master(); b.build_fy(); b.build_86b(); b.build_cash()
+    if R['master']:
+        ws = b.wb['10_MONTHLY_MASTER']
+        ws['A2'] = ('QUICK CHECK (cash & credit only): only TAX PAID DETAILS and PAYMENT DETAILS are read. Columns that come '
+                    'from other reports show 0 here and are not used.')
+        ws['A2'].font = Font(italic=True)
+        _cc_summary(b, run_dt)
+    _register(b)
+    names = ['00_CASH_CREDIT'] + [f'SRC_{c}' for c in CC_SOURCES] + ['09_FILE_REGISTER', '10_MONTHLY_MASTER',
+             '11_FY_SUMMARY', '15_RULE_86B', '19_CASH_RECON']
+    names = [s for s in names if s in b.wb.sheetnames] + [s for s in b.wb.sheetnames if s not in names]
+    b.wb._sheets = [b.wb[s] for s in names]
+    for s in b.wb.worksheets:
+        s.page_setup.orientation = 'landscape'; s.page_setup.fitToWidth = 1
+        s.sheet_properties.pageSetUpPr.fitToPage = True
+    b.wb.active = 0
+    b.wb.save(out_path)
+    c = R['cash']; m = R['master']
+    op = sum(x['op_total'] for x in m); itc = sum(x['itc'] for x in m)
+    return dict(path=out_path, periods=len(m), first=m[0]['period'] if m else None, last=m[-1]['period'] if m else None,
+                output_tax=op, itc=itc, itc_pct=(itc / op if op else None),
+                cash=c['totals']['TOTAL'] if c.get('available') else None,
+                cash_pct=(c['totals']['TOTAL'] / op if c.get('available') and op else None),
+                challans=c.get('count') if c.get('available') else None,
+                rule86b=R['rule86b'].get('flagged', []) if R['rule86b'].get('available') else None)
+
+CC_REGISTER_COLS = ['GSTIN', 'Taxpayer', 'Tax periods', 'From', 'To', 'Output tax declared', 'ITC availed',
+                    'ITC as % of output tax', 'Cash paid (challans)', 'Cash as % of output tax', 'Challans',
+                    'Months below 1% cash (Rule 86B, prima facie)', 'Workbook', 'Run at']
+
+def update_cc_register(path, gstin, name, res):
+    """One row per GSTIN in a register shared by all taxpayers checked; a re-run replaces that GSTIN's row."""
+    import openpyxl
+    from openpyxl.styles import Alignment
+    rows = []
+    if os.path.exists(path):
+        try:
+            ws0 = openpyxl.load_workbook(path)['CASH_CREDIT_CHECKS']
+            hdr = [c.value for c in ws0[4]]
+            for r in ws0.iter_rows(min_row=5, values_only=True):
+                if r and r[0] and r[0] != gstin and str(r[0]) != 'TOTAL':
+                    rows.append(dict(zip(hdr, r)))
+        except Exception:
+            rows = []
+    rows.append({'GSTIN': gstin, 'Taxpayer': name, 'Tax periods': res['periods'], 'From': res['first'], 'To': res['last'],
+                 'Output tax declared': round(res['output_tax']), 'ITC availed': round(res['itc']),
+                 'Cash paid (challans)': round(res['cash']) if res['cash'] is not None else None,
+                 'Challans': res['challans'],
+                 'Months below 1% cash (Rule 86B, prima facie)': (len(res['rule86b']) if res['rule86b'] is not None else None),
+                 'Workbook': os.path.basename(res['path']), 'Run at': datetime.datetime.now().strftime('%d-%m-%Y %H:%M')})
+    wb = Workbook(); ws = wb.active; ws.title = 'CASH_CREDIT_CHECKS'
+    ws['A1'] = 'CASH AND CREDIT — QUICK CHECKS, ALL TAXPAYERS'; ws['A1'].font = BOLD
+    ws['A2'] = ('One row per GSTIN, replaced each time that GSTIN is run with "Cash & credit only". Figures from TAX PAID DETAILS '
+                'and PAYMENT DETAILS; the workbook named in each row holds the detail.')
+    ws['N1'] = CREDIT_LINE; ws['N1'].font = Font(italic=True); ws['N1'].alignment = Alignment(horizontal='right')
+    ws['N2'] = datetime.date.today().strftime('%d-%m-%Y'); ws['N2'].alignment = Alignment(horizontal='right')
+    for j, h in enumerate(CC_REGISTER_COLS, 1):
+        c = ws.cell(row=4, column=j, value=h); c.font = BOLD; c.border = BD
+        c.alignment = Alignment(wrap_text=True, vertical='top', horizontal='center')
+    rows.sort(key=lambda x: str(x.get('GSTIN')))
+    for i, x in enumerate(rows, 5):
+        for j, h in enumerate(CC_REGISTER_COLS, 1):
+            v = x.get(h)
+            if h == 'ITC as % of output tax': v = f'=IFERROR(G{i}/F{i},"")'
+            if h == 'Cash as % of output tax': v = f'=IFERROR(IF(I{i}="","",I{i}/F{i}),"")'
+            c = ws.cell(row=i, column=j, value=v); c.border = BD
+            if j in (6, 7, 9): c.number_format = NUM
+            if j in (8, 10): c.number_format = '0.0%'
+    for j, w in enumerate([18, 30, 9, 10, 10, 18, 18, 12, 18, 12, 9, 14, 52, 16], 1):
+        ws.column_dimensions[get_column_letter(j)].width = w
+    ws.row_dimensions[4].height = 45
+    ws.freeze_panes = 'C5'
+    ws.auto_filter.ref = f'A4:N{4 + len(rows)}'
+    wb.save(path)
+    return len(rows)
 
 def build_workbook(ing, R, gstin, name, out_path, mark_missing_light_red=True, profile=None):
     b = Builder(ing, R, gstin, name, mark_missing_light_red, profile)
