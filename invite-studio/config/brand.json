@@ -1,0 +1,33 @@
+{
+  "name": "Vizha Invites",
+  "name_i18n": {
+    "ta": "விழா இன்வைட்ஸ்",
+    "en": "Vizha Invites",
+    "hi": "विळा इनवाइट्स"
+  },
+  "whatsapp": "+919000000000",
+  "domain": "vizha-invites.pages.dev",
+  "footer": {
+    "by": {
+      "ta": "அழைப்பிதழ் வடிவமைப்பு",
+      "en": "Invitation by",
+      "hi": "निमंत्रण डिज़ाइन"
+    },
+    "want_one": {
+      "ta": "உங்களுக்கும் வேண்டுமா? வாட்ஸ்அப் செய்யுங்கள்",
+      "en": "Want one? WhatsApp",
+      "hi": "आपको भी चाहिए? व्हाट्सऐप करें"
+    },
+    "prefill": {
+      "ta": "வணக்கம் {brand}! {code} அழைப்பிதழ் வடிவமைப்பைப் பார்த்தேன். எனக்கும் ஒன்று வேண்டும்.",
+      "en": "Hi {brand}! I saw the {code} invitation design and would like one.",
+      "hi": "नमस्ते {brand}! मैंने {code} निमंत्रण डिज़ाइन देखा, मुझे भी एक चाहिए।"
+    }
+  },
+  "prices_inr": {
+    "status": 299,
+    "web": 999,
+    "complete": 1499
+  },
+  "currency": "INR"
+}

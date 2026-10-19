@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="{{LANG}}" data-variant="{{VARIANT}}" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!--@HEAD-->
+<style>
+/*@ENGINE_CSS*/
+/*@THEME_CSS*/
+</style>
+<noscript><style>.opener{display:none}.reveal,.polaroid{opacity:1;transform:none}</style></noscript>
+</head>
+<body class="is-locked">
+
+<div class="opener" id="opener" role="button" tabindex="0" data-ui-aria="tap_open">
+  <div class="kg-glow"></div>
+  <div class="kg-doors" aria-hidden="true">
+    <div class="kg-door kg-door-l" data-orn="door"></div>
+    <div class="kg-door kg-door-r" data-orn="door"></div>
+  </div>
+  <div class="kg-thoranam" data-orn="thoranam" aria-hidden="true"></div>
+  <div class="kg-lamps-row" aria-hidden="true">
+    <div class="kg-lamp" data-orn="lamp"></div>
+    <div class="kg-lamp" data-orn="lamp"></div>
+  </div>
+  <div class="opener-content">
+    <div class="kg-nameplate">
+      <p class="opener-dear" data-guest hidden></p>
+      <p class="kg-opener-names"><span data-t="hosts.primary"></span><span class="amp" data-joiner="amp"></span><span data-t="hosts.secondary"></span></p>
+      <span class="tap-pill"><span class="tap-icon"></span><span data-ui="tap_open"></span></span>
+    </div>
+  </div>
+</div>
+
+<main class="page" id="page">
+  <section class="scene scene-hero" data-scene="names">
+    <div class="inner">
+      <div class="kg-lamp reveal" data-orn="lamp"></div>
+      <p class="blessing reveal" data-t="blessing"></p>
+      <div class="kg-frame reveal" data-delay="1">
+        <div class="kg-corner tl" data-orn="kolam"></div>
+        <div class="kg-corner tr" data-orn="kolam"></div>
+        <div class="kg-corner bl" data-orn="kolam"></div>
+        <div class="kg-corner br" data-orn="kolam"></div>
+        <p class="dear-line" data-guest hidden></p>
+        <h1 class="names">
+          <span class="name shimmer" data-t="hosts.primary"></span>
+          <span class="joiner" data-joiner="word"></span>
+          <span class="name shimmer" data-t="hosts.secondary"></span>
+        </h1>
+        <p class="family-line" data-t="hosts.family_line"></p>
+        <p class="intro" data-t="intro"></p>
+      </div>
+    </div>
+  </section>
+  <div class="zari" aria-hidden="true"></div>
+
+  <section class="scene" data-scene="photos">
+    <div class="inner">
+      <h2 class="scene-title reveal" data-ui="our_moments"></h2>
+      <div class="photo-stack" id="photo-stack"></div>
+    </div>
+  </section>
+  <div class="zari" aria-hidden="true"></div>
+
+  <section class="scene" data-scene="events">
+    <div class="inner">
+      <h2 class="scene-title reveal" data-ui="events"></h2>
+      <div class="timeline" id="events-list"></div>
+    </div>
+  </section>
+  <div class="zari" aria-hidden="true"></div>
+
+  <section class="scene" data-scene="countdown">
+    <div class="inner reveal">
+      <h2 class="scene-title" id="countdown-title" data-ui="countdown"></h2>
+      <div id="countdown"></div>
+    </div>
+  </section>
+  <div class="zari" aria-hidden="true"></div>
+
+  <section class="scene" data-scene="rsvp">
+    <div class="inner">
+      <h2 class="scene-title reveal" data-ui="rsvp_title"></h2>
+      <p class="scene-sub reveal" id="rsvp-deadline" style="margin:-10px 0 18px"></p>
+      <div id="rsvp-root" class="reveal"></div>
+      <div class="wishes" id="wishes" hidden>
+        <h3 class="scene-title" data-ui="wishes_title" style="font-size:24px"></h3>
+        <div id="wishes-list"></div>
+      </div>
+    </div>
+  </section>
+  <div class="zari" aria-hidden="true"></div>
+
+  <section class="scene" data-scene="contacts">
+    <div class="inner">
+      <h2 class="scene-title reveal" data-ui="contact_title"></h2>
+      <div class="contacts" id="contacts-list"></div>
+    </div>
+  </section>
+  <div class="zari" aria-hidden="true"></div>
+
+  <section class="scene closing-scene" data-scene="closing">
+    <div class="inner reveal">
+      <div class="kg-lamp" data-orn="lamp"></div>
+      <p class="closing" data-t="closing"></p>
+      <button type="button" class="btn" data-share><span data-ui="share"></span></button>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer" id="site-footer"></footer>
+<nav class="lang-toggle" id="lang-toggle"></nav>
+<div class="fab-stack">
+  <button type="button" class="fab" id="fab-share" data-ui-aria="share"></button>
+  <button type="button" class="fab" id="fab-mute"></button>
+</div>
+
+<!--@SCRIPTS-->
+</body>
+</html>

@@ -1,0 +1,184 @@
+/* Kanjeevaram Gold (KG-01) — palette, silk texture, temple doors and ornaments. */
+
+/* ---------- Variants ---------- */
+:root, [data-variant="maroon-gold"] {
+  --bg: #3A070B;
+  --bg-2: #5B0E14;
+  --ink: #FFF8E7;
+  --ink-soft: rgba(255, 248, 231, .86);
+  --accent: #C9A227;
+  --accent-light: #E8D08A;
+  --accent-text: #E8D08A;
+  --hl: #E8D08A;
+  --shine: #FFFBE9;
+  --on-accent: #3A070B;
+  --card-bg: #FFF8E7;
+  --card-ink: #3A070B;
+  --card-soft: #6B4A3A;
+  --card-accent-text: #7A5C0E;
+  --line: rgba(201, 162, 39, .55);
+  --door-a: #45090E;
+  --door-b: #6E1219;
+  --opener-bg: #2A0508;
+  --zari-ink: #5B0E14;
+  --sheen: rgba(255, 255, 255, .03);
+  --wish-bg: rgba(0, 0, 0, .18);
+}
+[data-variant="green-gold"] {
+  --bg: #0A2E1C;
+  --bg-2: #124A2D;
+  --on-accent: #0A2E1C;
+  --card-ink: #0A2E1C;
+  --card-soft: #3F5A49;
+  --door-a: #0B3520;
+  --door-b: #17603A;
+  --opener-bg: #061F12;
+  --zari-ink: #0F3F26;
+}
+[data-variant="ivory-gold"] {
+  --bg: #FFF8E7;
+  --bg-2: #F5E9CC;
+  --ink: #3A070B;
+  --ink-soft: #5E3B30;
+  --accent: #B8901C;
+  --accent-text: #7A5C0E;
+  --hl: #7A1620;
+  --shine: #D9A441;
+  --card-bg: #FFFFFF;
+  --line: rgba(184, 144, 28, .6);
+  --sheen: rgba(122, 92, 14, .035);
+  --wish-bg: rgba(122, 92, 14, .08);
+}
+
+:root {
+  --font-body: "Cormorant Garamond", Georgia, serif;
+  --font-latin: "Cormorant Garamond";
+  --font-script: "Great Vibes", "Cormorant Garamond", cursive;
+}
+html[lang="en"] body { font-size: 20px; font-weight: 500; }
+
+/* ---------- Silk texture (gradients only, no images) ---------- */
+.scene {
+  background:
+    repeating-linear-gradient(115deg, var(--sheen) 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(25deg, rgba(0, 0, 0, .04) 0 1px, transparent 1px 7px),
+    radial-gradient(130% 70% at 50% 0%, var(--bg-2), var(--bg) 78%);
+}
+.scene:nth-of-type(even) {
+  background:
+    repeating-linear-gradient(115deg, var(--sheen) 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(25deg, rgba(0, 0, 0, .04) 0 1px, transparent 1px 7px),
+    radial-gradient(130% 70% at 50% 100%, var(--bg-2), var(--bg) 78%);
+}
+.zari {
+  height: 30px;
+  background: var(--bg) var(--kg-zari) repeat-x center / 40px 30px;
+}
+
+/* ---------- Opener: temple doors ---------- */
+.opener { background: var(--opener-bg); }
+.opener.is-opening { background: transparent; transition: background .5s ease .6s; }
+.kg-glow {
+  position: absolute; inset: 0; z-index: 0; opacity: 0; pointer-events: none;
+  background: radial-gradient(circle at 50% 50%, rgba(255, 228, 150, .9), rgba(255, 200, 90, .3) 35%, transparent 68%);
+}
+.opener.is-opening .kg-glow { animation: kgGlow 1.3s ease-out forwards; }
+@keyframes kgGlow { 0% { opacity: 0; } 35% { opacity: 1; } 100% { opacity: 0; } }
+.kg-doors {
+  position: absolute; top: 0; bottom: 0; left: 50%; z-index: 1;
+  width: 100%; max-width: 560px; transform: translateX(-50%);
+  display: flex; perspective: 1600px;
+}
+.kg-door {
+  position: relative; flex: 1 1 50%; height: 100%;
+  transition: transform 1.25s cubic-bezier(.55, .06, .3, 1);
+  backface-visibility: hidden; -webkit-backface-visibility: hidden;
+  box-shadow: 0 0 30px rgba(0, 0, 0, .45);
+}
+.kg-door svg { width: 100%; height: 100%; }
+.kg-door-l { transform-origin: 0 50%; }
+.kg-door-r { transform-origin: 100% 50%; }
+.kg-door-r svg { transform: scaleX(-1); }
+.opener.is-opening .kg-door-l { transform: rotateY(-100deg); }
+.opener.is-opening .kg-door-r { transform: rotateY(100deg); }
+.kg-thoranam {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 2; pointer-events: none;
+  transition: transform .8s ease, opacity .6s ease;
+}
+.kg-thoranam svg { width: 100%; }
+.opener.is-opening .kg-thoranam { transform: translateY(-90px); opacity: 0; }
+.kg-lamps-row {
+  position: absolute; left: 0; right: 0; bottom: 4%; z-index: 2; pointer-events: none;
+  display: flex; justify-content: space-between; padding: 0 6%;
+  transition: opacity .5s ease;
+}
+.kg-lamps-row .kg-lamp { width: 44px; height: 88px; margin: 0; }
+.opener.is-opening .kg-lamps-row { opacity: 0; }
+.kg-nameplate {
+  width: 100%; max-width: 320px; padding: 18px 20px 20px;
+  border: 1.5px solid var(--accent); border-radius: 18px;
+  background: rgba(26, 3, 5, .78);
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, .25), inset 0 0 0 4px rgba(201, 162, 39, .22);
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
+/* The script font is set on the English spans only: a block's own font is downloaded even if no glyph uses it. */
+.kg-opener-names { font-family: var(--font-body); font-size: 40px; line-height: 1.2; color: var(--accent-light); }
+.kg-opener-names span:lang(en) { font-family: var(--font-script); }
+.kg-opener-names span:lang(ta) { font-family: var(--font-latin), var(--font-ta); font-weight: 700; font-size: 26px; }
+.kg-opener-names span:lang(hi) { font-family: var(--font-latin), var(--font-hi); font-weight: 700; font-size: 28px; }
+.kg-opener-names .amp { font-family: var(--font-body); font-size: 26px; padding: 0 4px; }
+.opener-dear:lang(ta), .opener-dear:lang(hi) { font-size: 19px; }
+
+/* ---------- Door + ornament SVG parts ---------- */
+.kg-line { fill: none; stroke: var(--accent); stroke-width: 1.4; }
+.kg-line2 { fill: rgba(0, 0, 0, .18); stroke: var(--accent); stroke-width: 1.6; }
+.kg-panel { fill: rgba(0, 0, 0, .22); stroke: var(--accent); stroke-width: 2.5; }
+.kg-stud { fill: var(--accent-light); stroke: #6B4C0C; stroke-width: 1; }
+.kg-ring { fill: none; stroke: var(--accent-light); stroke-width: 4; }
+.kg-seam { fill: var(--accent); }
+.kg-lotus ellipse { fill: none; stroke: var(--accent-light); stroke-width: 1.3; }
+.kg-lotus-c { fill: var(--accent-light); }
+.kg-brass { fill: var(--accent); stroke: #6B4C0C; stroke-width: .8; }
+.kg-flame { transform-origin: 30px 26px; animation: kgFlicker 1.6s ease-in-out infinite alternate; }
+@keyframes kgFlicker { 0% { transform: scale(1, 1); } 50% { transform: scale(.92, 1.07); } 100% { transform: scale(1.04, .95); } }
+.kg-kolam path { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linecap: round; }
+.kg-kolam-dot { fill: var(--accent-light); }
+[data-variant="ivory-gold"] .kg-kolam-dot { fill: var(--accent); }
+.kg-lamp { width: 50px; height: 100px; margin: 0 auto 16px; }
+.kg-lamp svg { width: 100%; height: 100%; }
+
+/* ---------- Hero: blessing + names ---------- */
+.scene-hero {
+  min-height: 100vh; min-height: 100svh;
+  display: flex; align-items: center; justify-content: center;
+  padding-top: 76px; padding-bottom: 48px;
+}
+.scene-hero > .inner { width: 100%; }
+.blessing {
+  font-variant: small-caps; letter-spacing: .12em;
+  color: var(--accent-text); font-size: 19px; font-weight: 600;
+  margin-bottom: 26px;
+}
+html[lang="ta"] .blessing, html[lang="hi"] .blessing { letter-spacing: .02em; font-size: 18px; }
+.kg-frame {
+  position: relative; padding: 40px 20px 34px;
+  border: 1.5px solid var(--line); border-radius: 6px;
+  outline: 1px solid var(--line); outline-offset: 5px;
+}
+.kg-corner { position: absolute; width: 56px; height: 56px; }
+.kg-corner svg { width: 100%; height: 100%; }
+.kg-corner.tl { top: -2px; left: -2px; }
+.kg-corner.tr { top: -2px; right: -2px; transform: scaleX(-1); }
+.kg-corner.bl { bottom: -2px; left: -2px; transform: scaleY(-1); }
+.kg-corner.br { bottom: -2px; right: -2px; transform: scale(-1, -1); }
+
+/* ---------- Cards ---------- */
+.event-card { border-top: 4px solid var(--accent); }
+.rsvp-card { border-top: 4px solid var(--accent); box-shadow: 0 10px 24px rgba(0, 0, 0, .25); }
+.wish { background: var(--wish-bg); }
+.closing-scene .btn { margin-top: 22px; color: var(--hl); }
+
+@media (prefers-reduced-motion: reduce) {
+  .kg-door, .kg-thoranam, .kg-lamps-row { transition: none; }
+  .kg-flame { animation: none; }
+}

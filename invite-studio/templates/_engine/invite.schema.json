@@ -1,0 +1,151 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "invite.schema.json",
+  "title": "Invite order",
+  "description": "One customer order. Every visible text is an i18n object {ta, en, hi}; a missing language falls back to en, then ta.",
+  "type": "object",
+  "required": ["slug", "template", "occasion", "default_lang", "langs", "hosts", "events"],
+  "additionalProperties": false,
+  "properties": {
+    "slug": {
+      "type": "string",
+      "description": "URL folder. Lowercase words joined by '-' and ending in a random 4-character suffix, e.g. ramya-karthik-x7q2.",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*-[a-z0-9]{4}$",
+      "maxLength": 60
+    },
+    "template": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "variant": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "occasion": {
+      "type": "string",
+      "enum": ["wedding", "engagement", "reception", "valaikappu", "housewarming", "birthday", "puberty", "naming", "anniversary", "other"]
+    },
+    "default_lang": { "$ref": "#/definitions/lang" },
+    "langs": { "type": "array", "items": { "$ref": "#/definitions/lang" }, "minItems": 1, "maxItems": 3, "uniqueItems": true },
+    "watermark": { "type": "boolean", "default": true },
+    "package": { "type": "string", "enum": ["status", "web", "complete"], "default": "web" },
+    "blessing": { "$ref": "#/definitions/i18n" },
+    "hosts": {
+      "type": "object",
+      "required": ["primary"],
+      "additionalProperties": false,
+      "properties": {
+        "primary": { "$ref": "#/definitions/i18n" },
+        "secondary": { "$ref": "#/definitions/i18n" },
+        "joiner": { "$ref": "#/definitions/i18n", "description": "Word between the names. Defaults to weds / & / संग." },
+        "family_line": { "$ref": "#/definitions/i18n" }
+      }
+    },
+    "intro": { "$ref": "#/definitions/i18n", "description": "Optional invitation sentence under the names." },
+    "events": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/definitions/event" } },
+    "countdown_to": { "type": "string", "description": "id of the event to count down to." },
+    "photos": { "type": "array", "maxItems": 6, "items": { "$ref": "#/definitions/photo" } },
+    "music": {
+      "type": ["object", "null"],
+      "required": ["file"],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "type": "string", "description": "Path relative to the project root (assets/music/...) or to the invite folder." },
+        "start_at_sec": { "type": "number", "minimum": 0 },
+        "volume": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "voice_welcome": { "type": ["string", "null"] },
+    "contacts": { "type": "array", "maxItems": 4, "items": { "$ref": "#/definitions/contact" } },
+    "rsvp": {
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "endpoint": { "type": "string" },
+        "deadline": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "max_guests": { "type": "integer", "minimum": 1, "maximum": 20 }
+      }
+    },
+    "closing": { "$ref": "#/definitions/i18n" },
+    "guest_personalisation": { "type": "boolean", "default": true },
+    "og": {
+      "type": "object",
+      "required": ["title"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "maxLength": 90 },
+        "description": { "type": "string", "maxLength": 160 }
+      }
+    }
+  },
+  "definitions": {
+    "lang": { "type": "string", "enum": ["ta", "en", "hi"] },
+    "i18n": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "ta": { "type": "string" },
+        "en": { "type": "string" },
+        "hi": { "type": "string" }
+      }
+    },
+    "datetime": {
+      "type": "string",
+      "description": "ISO 8601 with offset, e.g. 2026-12-11T06:00:00+05:30. Shown as written (venue local time).",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2})?([+-]\\d{2}:\\d{2}|Z)$"
+    },
+    "event": {
+      "type": "object",
+      "required": ["id", "title", "start", "venue"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+        "title": { "$ref": "#/definitions/i18n" },
+        "start": { "$ref": "#/definitions/datetime" },
+        "end": { "$ref": "#/definitions/datetime" },
+        "traditional_date": { "$ref": "#/definitions/i18n", "description": "Optional Tamil-calendar date typed by hand, e.g. கார்த்திகை 25." },
+        "note": { "$ref": "#/definitions/i18n" },
+        "venue": {
+          "type": "object",
+          "required": ["name"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "$ref": "#/definitions/i18n" },
+            "address": { "$ref": "#/definitions/i18n" },
+            "maps_url": { "type": "string", "pattern": "^https://" }
+          }
+        },
+        "dress_code": {
+          "type": "object",
+          "required": ["label"],
+          "additionalProperties": false,
+          "properties": {
+            "label": { "$ref": "#/definitions/i18n" },
+            "colour": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" }
+          }
+        }
+      }
+    },
+    "photo": {
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "object",
+          "required": ["src"],
+          "additionalProperties": false,
+          "properties": {
+            "src": { "type": "string" },
+            "alt": { "$ref": "#/definitions/i18n" }
+          }
+        }
+      ]
+    },
+    "contact": {
+      "type": "object",
+      "required": ["label"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "$ref": "#/definitions/i18n" },
+        "whatsapp": { "type": "string", "pattern": "^\\+?[0-9X ]{10,16}$" },
+        "phone": { "type": "string", "pattern": "^\\+?[0-9X ]{10,16}$" }
+      }
+    }
+  }
+}
