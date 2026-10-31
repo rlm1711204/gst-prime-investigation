@@ -12,6 +12,7 @@ https://colab.research.google.com/github/rlm1711204/gst-prime-investigation/blob
 - `versions/` keeps every released version, named with its version number and date.
 - `engine/` holds the same engine code that the notebook writes out at Steps 3–5, for reading on GitHub.
 - **BO comparison reports** (*Tax liabilities and ITC comparison*, one per financial year, from the BO portal) can be added alongside the GST-Prime exports. They are compared month by month with every GST-Prime figure and taken as final for the months they cover (`engine/gpe_bo.py`).
+- **E-way bill document-wise summary** (GST-Prime → Taxpayer Profile → E-Way Bill), saved to Excel in any shape — one sheet per date window, a table starting in any column, or the whole page pasted into one cell. Overlapping windows are counted once, pages are matched to the GSTIN, and the leads (bills of supply carrying tax, high values taxed at almost nothing, cess, rate before and after 22-09-2025, HSN in GSTR-1 against the e-way bill rate) go to sheets 19H–19M (`engine/gpe_ewb.py`). Step 8 can also build the e-way bill workbook alone.
 - `rate_master/GST_RATE_MASTER.xlsx` is the published GST rate master (one row per entry of a rate notification, with its source). Step 5A of the notebook can fetch it; `engine/gpe_rates.py` reads it in any other notebook:
 
 ```python

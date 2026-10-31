@@ -8,7 +8,7 @@ import os, re, json, hashlib, datetime, shutil
 from collections import OrderedDict
 import openpyxl
 
-ENGINE_VERSION = "1.9"
+ENGINE_VERSION = "1.10"
 
 # ----------------------------------------------------------------- helpers
 MONTHS = {m: i for i, m in enumerate(
@@ -184,6 +184,10 @@ REPORT_SPECS = OrderedDict([
     key='Financial Year', grain='fy', fname=r'GST-R1_FILING_SUMMARY',
     title='GSTR-1 filing summary, FY level')),
  # Not a GST-Prime export: the BO portal's own comparison, read by gpe_bo (it has no 'SNo' header row).
+ ('EWB_DOC', dict(
+    must={'__EWB_DOCUMENT_WISE__'},
+    key='Return Period', grain='period_multi', fname=r'Ewm_document_wise|e_?way_?bill', master=False, own_source=True,
+    title='E-way bills — document-wise summary (GST-Prime Taxpayer Profile)')),
  ('BO_CMP', dict(
     must={'__BO_COMPARISON_REPORT__'},
     key='Return Period', grain='period', fname=r'Tax_liability_and_ITC_comparison', master=False,
@@ -423,6 +427,9 @@ class Ingest:
             rec.update(status='DUPLICATE - NOT COUNTED',
                        note=f'Byte-identical to {self._seen_md5[h]}. Adds nothing; excluded from every count.')
             self.register.append(rec); return rec
+        from gpe_ewb import is_ewb_file, add_ewb
+        if is_ewb_file(path):         # the EWB document-wise summary: pages saved in several shapes, overlapping windows
+            return add_ewb(self, path, rec, batch)
         from gpe_bo import is_bo_file, add_bo
         if is_bo_file(path):          # the BO portal's comparison report: its own reader, its own merge rule
             return add_bo(self, path, rec, batch)

@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 from gpe_core import REPORT_SPECS, period_key, fy_of, n0, inr
 from gpe_checks import due_date
 
-BUILD_VERSION = "1.12"
+BUILD_VERSION = "1.13"
 BOLD = Font(bold=True)
 THIN = Side(style='thin')
 BD = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -166,7 +166,8 @@ class Builder:
 
     # ------------------------------------------------------ source sheets
     def build_sources(self, only=None):
-        order = [c for c in REPORT_SPECS if self.ing.have(c) and (only is None or c in only)]
+        order = [c for c in REPORT_SPECS if self.ing.have(c) and (only is None or c in only)
+                 and not REPORT_SPECS[c].get('own_source')]
         for code in order:
             sp = REPORT_SPECS[code]
             rows = self.ing.data[code]
@@ -1645,7 +1646,7 @@ class Builder:
             ws.cell(row=i, column=7, value=f['r'])
         r = 4 + len(F) + 1
         ws.cell(row=r, column=2, value='TOTAL REVENUE IMPLICATION (excluding interest under section 50 and penalty)').font = BOLD
-        ws.cell(row=r, column=4, value=f'=SUM(D5:D{r-1})').font = BOLD
+        ws.cell(row=r, column=4, value=f'=SUM(D5:D{r-1})' if F else 0).font = BOLD   # no finding: 0, not a circular SUM
         for rr in range(5, r+1):
             for c in range(1, 8):
                 x = ws.cell(row=rr, column=c); x.border = BD
@@ -1731,6 +1732,8 @@ class Builder:
                    + (f'Detail for {", ".join(dd["missing_months"])} is still to be uploaded.' if dd['missing_months'] else '')), '']
         from gpe_bo import bo_report_lines
         T += bo_report_lines(R)
+        from gpe_ewb import ewb_report_lines
+        T += ewb_report_lines(R)
         T += ['3. PRINCIPAL FINDINGS', '']
         for i, f in enumerate(sorted(F, key=_frank), 1):
             T += [f'3.{i}  {f["t"]}.  {f["w"]}'
@@ -2283,6 +2286,7 @@ SHEET_NOTE = {
  '19C_TDS_GSTR7':'What the deductors paid for (GSTR-7 TDS / 2%) against GSTR-3B and GSTR-1; the legal cross-checks.',
  '20_FINDINGS':'Consolidated findings with quantification.',
  **__import__('gpe_bo').SHEET_NOTES,
+ **__import__('gpe_ewb').SHEET_NOTES,
  '21_REPORT':'The report in narrative form.',
  '22_ACTION_POINTS':'What to do, in the order to do it.',
  '23_DATA_GAPS':'What is held and what is still required.',
@@ -2293,7 +2297,9 @@ ORDER_HINT = ['00_INDEX'] + [f'SRC_{c}'[:31] for c in REPORT_SPECS] + ['SRC_RATE
              ['08_DERIVATION_LOGIC','09_FILE_REGISTER','09A_RESTATEMENTS','10_MONTHLY_MASTER','11_FY_SUMMARY','12_HSN_PROFILE','12A_HSN_RATE_CHECK',
               '13_EXCESS_ITC','14_DORMANCY_ITC','15_RULE_86B','16_RCM_CHECK','17_R1_vs_R3B','18_RETURN_FILING',
               '19_CASH_RECON','19A_ITC_vs_2A','19B_CREDIT_NOTES','19C_TDS_GSTR7','19D_TDS_PARTIES',
-              '19E_BO_vs_NOTEBOOK','19F_BO_FINAL_POSITION','19G_CHANGE_REPORT','20_FINDINGS','21_REPORT','22_ACTION_POINTS',
+              '19E_BO_vs_NOTEBOOK','19F_BO_FINAL_POSITION','19G_CHANGE_REPORT',
+              '19H_EWB_COPIES','19I_EWB_RECORDS','19J_EWB_MONTHLY','19K_EWB_FY','19L_EWB_FINDINGS','19M_EWB_HSN_RATE',
+              '20_FINDINGS','21_REPORT','22_ACTION_POINTS',
               '23_DATA_GAPS','24_LIMITATION']
 
 CC_SOURCES = ('TAX_PAID', 'PAYMENTS')
@@ -2456,6 +2462,12 @@ def build_workbook(ing, R, gstin, name, out_path, mark_missing_light_red=True, p
     b.total_before_bo = sum(f['a'] for f in F_before)
     F = b.build_findings()
     gpe_bo.build_changes(b, F, F_before, b.findings_total_cell)
+    import gpe_ewb
+    if (b.R.get('ewb') or {}).get('available'):
+        def _r1(pcell, code, field):
+            f = b.lookup(code, field, 'Return Period', pcell)
+            return (f[:-2] + '"")') if isinstance(f, str) and f.endswith(',0)') else ''
+        gpe_ewb.build_ewb_sheets(b.wb, b.R['ewb'], b.mark, _r1)
     b.build_report(F); b.build_actions(F); b.build_gaps(); b.build_limitation()
     b.build_restatements(); _derivation(b); _register(b)
     _index(b, BUILD_VERSION, datetime.datetime.now())
